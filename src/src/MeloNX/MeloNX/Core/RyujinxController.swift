@@ -504,8 +504,7 @@ class RyujinxController: ObservableObject {
     
     
     func clearShaderCacheWithConfirmation(_ game: GameInfo? = nil) {
-        let targetName = (game?.titleName ?+ "'s") ?? "all"
-        AppAlerts.showAlert(title: "Shader Cache Deletion.", message: "Are you sure you want to delete \(targetName) shader cache?", actions: [
+        AppAlerts.showAlert(title: "Shader Cache Deletion.", message: "Are you sure you want to delete \(game?.titleName ?+ "'s", default: "all") shader cache?", actions: [
             (title: "Cancel", style: .cancel, handler: nil),
             (title: "Delete", style: .destructive, handler: {
                 self.clearShaderCache(game, withConfirmation: true)
