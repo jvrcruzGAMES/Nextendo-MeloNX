@@ -10,6 +10,7 @@ import UniformTypeIdentifiers
 
 extension GamesListView {
     func toolbarHandler() -> some ToolbarContent {
+#if compiler(>=6.4)
         if #available(iOS 19.0, *) {
             return Group {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -33,6 +34,17 @@ extension GamesListView {
                 }
             }
         }
+#else
+        return Group {
+            ToolbarItem(placement: .topBarTrailing) {
+                addGameButton
+            }
+            
+            ToolbarItem(placement: .topBarLeading) {
+                optionsSection
+            }
+        }
+#endif
     }
     
     
