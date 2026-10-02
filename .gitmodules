@@ -1,6 +1,3 @@
-[submodule "references/Ryujinx"]
-	path = references/Ryujinx
-	url = https://git.ryujinx.app/projects/Ryubing.git
 [submodule "references/Ryujinx-Nextendo"]
 	path = references/Ryujinx-Nextendo
 	url = https://github.com/NextendoNetwork/Ryujinx-Nextendo
