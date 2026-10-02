@@ -30,7 +30,7 @@ concurrency:
 jobs:
   build:
     name: Build MeloNX (iOS)
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     permissions:
       contents: read
@@ -61,10 +61,10 @@ jobs:
 
       - name: Select Xcode
         run: |
-          if [ -d "/Applications/Xcode_16.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
-          elif [ -d "/Applications/Xcode_15.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          XCODE_16=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$XCODE_16" ] && [ -d "$XCODE_16" ]; then
+            echo "Selecting $XCODE_16..."
+            sudo xcode-select -s "$XCODE_16/Contents/Developer"
           fi
           echo "Selected Xcode:"
           xcodebuild -version
