@@ -70,13 +70,24 @@ public enum NextendoSecrets {
 EOF
 
 echo "=== Building Real C# Ryujinx Core Library ==="
-export DOTNET_ROOT="/usr/local/share/dotnet"
-export PATH="/usr/local/share/dotnet:/opt/homebrew/bin:$PATH"
+if [ -z "$DOTNET_ROOT" ] || [ ! -d "$DOTNET_ROOT" ]; then
+    if [ -d "/usr/local/share/dotnet" ]; then
+        export DOTNET_ROOT="/usr/local/share/dotnet"
+    elif [ -d "$HOME/.dotnet" ]; then
+        export DOTNET_ROOT="$HOME/.dotnet"
+    fi
+fi
+
+if [ -n "$DOTNET_ROOT" ] && [ -d "$DOTNET_ROOT" ]; then
+    export PATH="$DOTNET_ROOT:/opt/homebrew/bin:$PATH"
+else
+    export PATH="/usr/local/share/dotnet:/opt/homebrew/bin:$PATH"
+fi
 
 DOTNET_CMD="$(command -v dotnet || true)"
 if [ -z "$DOTNET_CMD" ]; then
-    for candidate in "/opt/homebrew/bin/dotnet" "/usr/local/share/dotnet/dotnet" "/usr/local/bin/dotnet" "$HOME/.dotnet/dotnet"; do
-        if [ -x "$candidate" ]; then
+    for candidate in "$DOTNET_ROOT/dotnet" "/opt/homebrew/bin/dotnet" "/usr/local/share/dotnet/dotnet" "/usr/local/bin/dotnet" "$HOME/.dotnet/dotnet"; do
+        if [ -n "$candidate" ] && [ -x "$candidate" ]; then
             DOTNET_CMD="$candidate"
             break
         fi
@@ -150,12 +161,15 @@ done
 
 DEV_TEAM="${DEVELOPMENT_TEAM:-8Y564F7WGM}"
 
+DERIVED_DATA_DIR="$BUILD_DIR/DerivedData"
+
 if [ "$DO_SIGN" = true ]; then
     echo "=== Building MeloNX App (Signed, Config: $CONFIGURATION, Development Identity) ==="
     xcodebuild -project src/src/MeloNX/MeloNX.xcodeproj \
                -scheme MeloNX \
                -configuration "$CONFIGURATION" \
                -destination 'generic/platform=iOS' \
+               -derivedDataPath "$DERIVED_DATA_DIR" \
                -allowProvisioningUpdates \
                CODE_SIGNING_ALLOWED=YES \
                CODE_SIGN_IDENTITY="Apple Development" \
@@ -166,12 +180,15 @@ else
                -scheme MeloNX \
                -configuration "$CONFIGURATION" \
                -destination 'generic/platform=iOS' \
+               -derivedDataPath "$DERIVED_DATA_DIR" \
+               CODE_SIGN_STYLE=Manual \
                CODE_SIGNING_ALLOWED=NO \
                CODE_SIGN_IDENTITY="" \
-               CODE_SIGNING_REQUIRED=NO
+               CODE_SIGNING_REQUIRED=NO \
+               DEVELOPMENT_TEAM="" \
+               PROVISIONING_PROFILE_SPECIFIER=""
 fi
 
-DERIVED_DATA_DIR="$(xcodebuild -project src/src/MeloNX/MeloNX.xcodeproj -scheme MeloNX -showBuildSettings | grep -m1 BUILD_DIR | awk '{print $3}' | sed 's|/Build/Products||')"
 APP_PATH="$DERIVED_DATA_DIR/Build/Products/${CONFIGURATION}-iphoneos/MeloNX.app"
 if [ ! -d "$APP_PATH" ]; then
     APP_PATH="$(find "$DERIVED_DATA_DIR" -name "MeloNX.app" -type d | head -n 1)"

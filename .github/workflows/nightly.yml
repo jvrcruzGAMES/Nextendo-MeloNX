@@ -43,6 +43,14 @@ jobs:
       NEXTENDO_SERVER_URL: ${{ secrets.NEXTENDO_SERVER_URL }}
       NEXTENDO_REDIRECT_URI: ${{ secrets.NEXTENDO_REDIRECT_URI }}
       NEXTENDO_OAUTH_SCOPES: ${{ secrets.NEXTENDO_OAUTH_SCOPES }}
+      
+      # Force complete unsigned mode across Xcode tooling in CI
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGNING_ALLOWED: 'NO'
+      CODE_SIGN_IDENTITY: ''
+      CODE_SIGNING_REQUIRED: 'NO'
+      DEVELOPMENT_TEAM: ''
+      PROVISIONING_PROFILE_SPECIFIER: ''
 
     steps:
       - name: Checkout Repository
@@ -65,11 +73,20 @@ jobs:
           if [ -n "$XCODE_16" ] && [ -d "$XCODE_16" ]; then
             echo "Selecting $XCODE_16..."
             sudo xcode-select -s "$XCODE_16/Contents/Developer"
+          elif [ -d "/Applications/Xcode.app" ]; then
+            sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           fi
           echo "Selected Xcode:"
           xcodebuild -version
 
       - name: Build Unsigned MeloNX and Package IPA
+        env:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGNING_ALLOWED: 'NO'
+          CODE_SIGN_IDENTITY: ''
+          CODE_SIGNING_REQUIRED: 'NO'
+          DEVELOPMENT_TEAM: ''
+          PROVISIONING_PROFILE_SPECIFIER: ''
         run: |
           CONFIG="${{ inputs.configuration || 'Release' }}"
           chmod +x ./build.sh
