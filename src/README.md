@@ -1,7 +1,7 @@
 <body>
   <p align="center">
     <a href="https://melonx.org">
-      <img src="https://git.ryujinx.app/MeloNX/MeloNX-Legacy/raw/branch/XC-ios-ht/src/MeloNX/MeloNX/Assets/Assets.xcassets/AppIcon.appiconset/nxgradientpng.png" alt="MeloNX Logo" width="120">
+      <img src="https://starforgejo.dev/projects/MeloNX/raw/branch/master/src/MeloNX/MeloNX/Assets/Assets.xcassets/AppIcon.appiconset/nxgradientpng.png" alt="MeloNX Logo" width="120">
     </a>
   </p>
   <h1 align="center">MeloNX</h1>
@@ -75,7 +75,7 @@ We have a discord server!
 
 #### 1. Sideload Application
 Download and install MeloNX using [PlumeImpactor](https://github.com/claration/Impactor/releases) on a computer.
-- [Download **MeloNX** From Releases](https://git.ryujinx.app/projects/MeloNX/releases)
+- [Download **MeloNX** From Releases](https://starforgejo.dev/projects/MeloNX/releases/latest)
 - Open PlumeImpactor > Click Settings > Click Login
 - Login with the same Apple ID you are using for SideStore (or AltStore).
 - Import the MeloNX .ipa you downloaded earlier.
@@ -105,7 +105,7 @@ To have MeloNX show inside SideStore (or AltStore), You must re-install it:
 
 #### 1. Sideload MeloNX
 Download and install MeloNX using your preferred Apple ID (NOT CERT) sideloader:
-- [Download MeloNX from Releases](https://git.ryujinx.app/projects/MeloNX/releases)
+- [Download MeloNX from Releases](https://starforgejo.dev/projects/MeloNX/releases/latest)
 
 #### 2. Enable Memory Entitlement
 - Visit [Apple Developer Identifiers](https://developer.apple.com/account/resources/identifiers).
@@ -139,7 +139,7 @@ Download and install MeloNX using your preferred Apple ID (NOT CERT) sideloader:
 #### 1. Sideload Applications
 
 Download and install both apps using your preferred **APPLE ID** sideloader:
-- **MeloNX**: [Download from Releases](https://git.ryujinx.app/projects/MeloNX/releases)
+- **MeloNX**: [Download from Releases](https://starforgejo.dev/projects/MeloNX/releases/latest)
 - **Entitlement App**: [Download IPA](https://github.com/hugeBlack/GetMoreRam/releases/download/nightly/GetMoreRam.ipa)
 #### 2. Enable Memory Entitlement
 
@@ -222,7 +222,7 @@ This project makes use of code authored by the libvpx project, licensed under BS
 See [LICENSE.txt](LICENSE.txt) and [THIRDPARTY.md](distribution/legal/THIRDPARTY.md) for more details.
 
 # Credits
-- [Ryujinx](https://git.ryujinx.app/ryubing/ryujinx) the base of MeloNX (Thank you Ryubing!)
+- [Ryujinx](https://git.ryujinx.app/ryubing/ryujinx) the base of MeloNX
 - [LibHac](https://github.com/Thealexbarney/LibHac) is used for our file-system.
 - [AmiiboAPI](https://www.amiiboapi.com) is used in our Amiibo emulation.
 - [ldn_mitm](https://github.com/spacemeowx2/ldn_mitm) is used for one of our available multiplayer modes.

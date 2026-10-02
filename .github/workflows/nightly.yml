@@ -1,0 +1,84 @@
+name: Nightly Build
+
+on:
+  schedule:
+    # Run every night at 03:00 UTC
+    - cron: '0 3 * * *'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+      - '.env.example'
+      - 'LICENSE.txt'
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build Configuration'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build MeloNX (iOS)
+    runs-on: macos-14
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    env:
+      # Nextendo Secret Build Credentials (configured in GitHub Repository Secrets)
+      NEXTENDO_OAUTH_CLIENT_ID: ${{ secrets.NEXTENDO_OAUTH_CLIENT_ID }}
+      NEXTENDO_SERVER_IP: ${{ secrets.NEXTENDO_SERVER_IP }}
+      NEXTENDO_NAT_IP: ${{ secrets.NEXTENDO_NAT_IP }}
+      NEXTENDO_SERVER_URL: ${{ secrets.NEXTENDO_SERVER_URL }}
+      NEXTENDO_REDIRECT_URI: ${{ secrets.NEXTENDO_REDIRECT_URI }}
+      NEXTENDO_OAUTH_SCOPES: ${{ secrets.NEXTENDO_OAUTH_SCOPES }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+          dotnet-quality: 'preview'
+
+      - name: Select Xcode
+        run: |
+          if [ -d "/Applications/Xcode_16.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          elif [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+          fi
+          echo "Selected Xcode:"
+          xcodebuild -version
+
+      - name: Build Unsigned MeloNX and Package IPA
+        run: |
+          CONFIG="${{ inputs.configuration || 'Release' }}"
+          chmod +x ./build.sh
+          ./build.sh --configuration "$CONFIG"
+
+      - name: Upload MeloNX Unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeloNX-Nextendo-IPA
+          path: build/MeloNX.ipa
+          if-no-files-found: error
+          retention-days: 14

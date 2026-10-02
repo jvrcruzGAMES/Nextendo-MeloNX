@@ -134,7 +134,6 @@ struct SettingsView: View {
         case input    = "Input"
         case misc     = "Misc"
         case system   = "System"
-        case nextendo = "Nextendo"
         case advanced = "Advanced"
         
         var id: String { "\(rawValue)" }
@@ -145,7 +144,6 @@ struct SettingsView: View {
             case .input:    return "gamecontroller.fill"
             case .system:   return "gearshape.fill"
             case .misc:     return "ellipsis.circle.fill"
-            case .nextendo: return "globe.americas.fill"
             case .advanced: return "terminal.fill"
             }
         }
@@ -157,7 +155,6 @@ struct SettingsView: View {
             case .input:    parent.inputForm
             case .misc:     parent.miscForm
             case .system:   parent.systemForm
-            case .nextendo: parent.nextendoForm
             case .advanced: parent.advancedForm
             }
         }
@@ -1107,16 +1104,10 @@ struct FolderListView: View {
             } label: {
                 Label("Add Folder", systemImage: "plus.circle.fill")
             }
+            .padding(.vertical, 4)
         }
     }
 }
-
-extension SettingsView {
-    var nextendoForm: some View {
-        NextendoSettingsView()
-    }
-}
-
 
 struct NavigationStack<Content: View>: View {
     @ViewBuilder var content: () -> Content

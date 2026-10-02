@@ -6,10 +6,103 @@
 //
 
 import SwiftUI
-import AuthenticationServices
 import CommonCrypto
 import Security
-import Network
+import WebKit
+
+struct NextendoOAuthWebView: UIViewControllerRepresentable {
+    let authUrl: URL
+    let onCallback: (URL) -> Void
+    let onCancel: () -> Void
+    
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let webVC = OAuthWebViewController(authUrl: authUrl, onCallback: onCallback, onCancel: onCancel)
+        let nav = UINavigationController(rootViewController: webVC)
+        nav.modalPresentationStyle = .fullScreen
+        return nav
+    }
+    
+    func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
+}
+
+class OAuthWebViewController: UIViewController, WKNavigationDelegate {
+    let authUrl: URL
+    let onCallback: (URL) -> Void
+    let onCancel: () -> Void
+    private var webView: WKWebView!
+    private var progressView: UIProgressView!
+    private var progressObserver: NSKeyValueObservation?
+    
+    init(authUrl: URL, onCallback: @escaping (URL) -> Void, onCancel: @escaping () -> Void) {
+        self.authUrl = authUrl
+        self.onCallback = onCallback
+        self.onCancel = onCancel
+        super.init(nibName: nil, bundle: nil)
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        title = "Sign In with Nextendo"
+        view.backgroundColor = .systemBackground
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem: .cancel,
+            target: self,
+            action: #selector(cancelTapped)
+        )
+        
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        
+        webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(webView)
+        
+        progressView = UIProgressView(progressViewStyle: .bar)
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(progressView)
+        
+        NSLayoutConstraint.activate([
+            progressView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            progressView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            progressView.heightAnchor.constraint(equalToConstant: 2),
+            
+            webView.topAnchor.constraint(equalTo: progressView.bottomAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        
+        progressObserver = webView.observe(\.estimatedProgress, options: .new) { [weak self] webView, _ in
+            self?.progressView.progress = Float(webView.estimatedProgress)
+            self?.progressView.isHidden = webView.estimatedProgress >= 1.0
+        }
+        
+        webView.load(URLRequest(url: authUrl))
+    }
+    
+    @objc private func cancelTapped() {
+        onCancel()
+    }
+    
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        if let url = navigationAction.request.url {
+            let redirectScheme = URL(string: NextendoSecrets.defaultRedirectUri)?.scheme ?? "melonx"
+            if url.scheme?.lowercased() == redirectScheme.lowercased() {
+                decisionHandler(.cancel)
+                onCallback(url)
+                return
+            }
+        }
+        decisionHandler(.allow)
+    }
+}
 
 struct PKCE {
     let verifier: String
@@ -41,117 +134,6 @@ struct PKCE {
     }
 }
 
-class NextendoWebAuthPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
-    static let shared = NextendoWebAuthPresenter()
-    
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        let scenes = UIApplication.shared.connectedScenes
-        let windowScene = scenes.first as? UIWindowScene
-        return windowScene?.windows.first { $0.isKeyWindow } ?? ASPresentationAnchor()
-    }
-}
-
-class LoopbackOAuthListener {
-    private var listener: NWListener?
-    var onCallbackReceived: ((URL) -> Void)?
-    private(set) var assignedPort: UInt16 = 80
-
-    func start(completion: @escaping (UInt16?) -> Void) {
-        do {
-            let params = NWParameters.tcp
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: 80)
-            
-            listener = try NWListener(using: params)
-            listener?.stateUpdateHandler = { [weak self] state in
-                guard let self = self else { return }
-                if case .ready = state {
-                    self.assignedPort = 80
-                    completion(80)
-                } else if case .failed = state {
-                    self.startDynamicFallback(completion: completion)
-                }
-            }
-            
-            listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleConnection(connection)
-            }
-            
-            listener?.start(queue: .main)
-        } catch {
-            startDynamicFallback(completion: completion)
-        }
-    }
-
-    private func startDynamicFallback(completion: @escaping (UInt16?) -> Void) {
-        do {
-            let params = NWParameters.tcp
-            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
-            listener = try NWListener(using: params)
-            listener?.stateUpdateHandler = { [weak self] state in
-                guard let self = self else { return }
-                if case .ready = state {
-                    if let p = self.listener?.port?.rawValue {
-                        self.assignedPort = p
-                        completion(p)
-                    }
-                } else if case .failed = state {
-                    completion(nil)
-                }
-            }
-            listener?.newConnectionHandler = { [weak self] connection in
-                self?.handleConnection(connection)
-            }
-            listener?.start(queue: .main)
-        } catch {
-            completion(nil)
-        }
-    }
-
-    private func handleConnection(_ connection: NWConnection) {
-        connection.start(queue: .main)
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, _, _ in
-            guard let self = self, let data = data, let requestStr = String(data: data, encoding: .utf8) else { return }
-            
-            let lines = requestStr.components(separatedBy: "\r\n")
-            if let firstLine = lines.first, firstLine.contains("GET") {
-                let parts = firstLine.components(separatedBy: " ")
-                if parts.count >= 2 {
-                    let pathAndQuery = parts[1]
-                    let portStr = self.assignedPort == 80 ? "" : ":\(self.assignedPort)"
-                    if let url = URL(string: "http://127.0.0.1\(portStr)\(pathAndQuery)") {
-                        self.onCallbackReceived?(url)
-                    }
-                }
-            }
-            
-            let responseHtml = """
-            HTTP/1.1 200 OK\r
-            Content-Type: text/html; charset=utf-8\r
-            Connection: close\r
-            \r
-            <!DOCTYPE html>
-            <html>
-            <head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorization Successful</title></head>
-            <body style="font-family: -apple-system, sans-serif; text-align: center; padding: 50px 20px; background-color: #f2f2f7; color: #1c1c1e;">
-                <div style="background: white; border-radius: 16px; padding: 30px; max-width: 400px; margin: 0 auto; box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
-                    <h2 style="color: #007aff; margin-bottom: 10px;">Authorization Successful!</h2>
-                    <p style="color: #6c6c70; font-size: 15px;">Your device has been authorized with Nextendo Network.</p>
-                    <p style="color: #8e8e93; font-size: 13px; margin-top: 20px;">You may now close this window and return to MeloNX.</p>
-                </div>
-            </body>
-            </html>
-            """
-            connection.send(content: responseHtml.data(using: .utf8), completion: .contentProcessed({ _ in
-                connection.cancel()
-            }))
-        }
-    }
-
-    func stop() {
-        listener?.cancel()
-        listener = nil
-    }
-}
 
 struct SupportedGameInfo: Identifiable {
     let id = UUID()
@@ -166,12 +148,13 @@ struct NextendoSettingsView: View {
     
     // Core Network & Servers (Matching Nextendo Ryujinx NextendoEndpoint.cs)
     @AppStorage("enableNextendoOnline") private var enableNextendoOnline: Bool = true
-    @AppStorage("nextendoServerUrl") private var nextendoServerUrl: String = "https://nextendo.network"
+    @AppStorage("nextendoServerUrl") private var nextendoServerUrl: String = NextendoSecrets.defaultServerUrl
     
-    // Custom Server Override Mode (Matching NextendoServerOverride.cs / HorsNextendo)
+    // Custom Server Override Mode (Private LAN / Self-Hosted, distinct from Nextendo mode)
     @AppStorage("enableServerOverride") private var enableServerOverride: Bool = false
-    @AppStorage("nextendoServerIp") private var nextendoServerIp: String = ""
-    @AppStorage("nextendoNatIp") private var nextendoNatIp: String = ""
+    @AppStorage("customServerUrl") private var customServerUrl: String = ""
+    @AppStorage("customServerIp") private var customServerIp: String = ""
+    @AppStorage("customNatIp") private var customNatIp: String = ""
     
     // Account & Profile (Read-only)
     @AppStorage("nextendoUserPseudo") private var nextendoUserPseudo: String = ""
@@ -192,8 +175,10 @@ struct NextendoSettingsView: View {
     @State private var showingResetAlert = false
     @State private var authErrorMessage: String? = nil
     @State private var isAuthenticating = false
-    @State private var authSession: ASWebAuthenticationSession? = nil
-    @State private var loopbackListener: LoopbackOAuthListener? = nil
+    @State private var showingFullPageOAuth = false
+    @State private var currentAuthUrl: URL? = nil
+    @State private var currentCodeVerifier: String = ""
+    @State private var currentOAuthState: String = ""
     @State private var isSupportedGamesExpanded = false
     @Environment(\.colorScheme) var colorScheme
     
@@ -215,14 +200,6 @@ struct NextendoSettingsView: View {
         SupportedGameInfo(name: "Mario Golf: Super Rush", titleId: "0100537011400000", engine: "NEX (PRUDP)", features: "Standard & Speed Golf Matches, Global Ranked Tournaments"),
         SupportedGameInfo(name: "ARMS", titleId: "0100CA30000C2000", engine: "NEX (PRUDP)", features: "Party Match & Ranked Online Battles, Custom Lobbies")
     ]
-    
-    var truncatedToken: String {
-        guard !nextendoAuthToken.isEmpty else { return "Not Authorized" }
-        let prefixCount = min(7, nextendoAuthToken.count)
-        let prefix = String(nextendoAuthToken.prefix(prefixCount))
-        let dots = String(repeating: "•", count: max(12, nextendoAuthToken.count - prefixCount))
-        return "\(prefix)\(dots)"
-    }
     
     var body: some View {
         Form {
@@ -282,57 +259,61 @@ struct NextendoSettingsView: View {
                     }
                 }
                 
-                HStack {
-                    Text("Account Token")
-                        .font(.subheadline)
-                    Spacer()
-                    Text(truncatedToken)
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundColor(nextendoAuthToken.isEmpty ? .secondary : .blue)
-                }
-                
-                if nextendoAuthToken.isEmpty {
-                    Button(action: {
-                        startASWebAuthenticationSession()
-                    }) {
-                        HStack {
-                            Label("Device Authorization (Sign In)", systemImage: "key.fill")
-                                .font(.subheadline)
-                            Spacer()
-                            if isAuthenticating {
-                                ProgressView()
-                            } else {
-                                Image(systemName: "safari.fill")
-                                    .font(.caption)
-                                    .foregroundColor(.blue)
+                if NextendoSecrets.isOAuthEnabled {
+                    if nextendoAuthToken.isEmpty {
+                        Button(action: {
+                            startFullPageOAuth()
+                        }) {
+                            HStack {
+                                Label("Device Authorization (Sign In)", systemImage: "key.fill")
+                                    .font(.subheadline)
+                                Spacer()
+                                if isAuthenticating {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "safari.fill")
+                                        .font(.caption)
+                                        .foregroundColor(.blue)
+                                }
+                            }
+                        }
+                    } else {
+                        Button(role: .destructive, action: {
+                            NextendoKeychainHelper.deleteToken()
+                            nextendoAuthToken = ""
+                            nextendoUserPseudo = ""
+                            nextendoFriendCode = ""
+                            nextendoPid = "0"
+                            UserDefaults.standard.removeObject(forKey: "nextendoMiiData")
+                            let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
+                            try? FileManager.default.removeItem(at: accountFilePath)
+                            initEnvironmentVariables()
+                        }) {
+                            HStack {
+                                Label("Sign Out", systemImage: "door.left.hand.open")
+                                    .font(.subheadline)
+                                    .foregroundColor(.red)
+                                Spacer()
                             }
                         }
                     }
-                } else {
-                    Button(role: .destructive, action: {
-                        nextendoAuthToken = ""
-                        nextendoUserPseudo = ""
-                        nextendoFriendCode = ""
-                        nextendoPid = "0"
-                        UserDefaults.standard.removeObject(forKey: "nextendoMiiData")
-                        let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
-                        try? FileManager.default.removeItem(at: accountFilePath)
-                        initEnvironmentVariables()
-                    }) {
+                    
+                    Link(destination: URL(string: "\(nextendoServerUrl.isEmpty ? NextendoSecrets.defaultServerUrl : nextendoServerUrl)/compte") ?? URL(string: "https://nextendo.network/compte")!) {
                         HStack {
-                            Label("Sign Out", systemImage: "door.left.hand.open")
+                            Label("Change Account Settings", systemImage: "arrow.up.right.square")
                                 .font(.subheadline)
-                                .foregroundColor(.red)
                             Spacer()
                         }
                     }
-                }
-                
-                Link(destination: URL(string: "https://nextendo.network/compte")!) {
+                } else {
                     HStack {
-                        Label("Change Account Settings", systemImage: "arrow.up.right.square")
+                        Label("Nextendo OAuth", systemImage: "key.slash")
                             .font(.subheadline)
+                            .foregroundColor(.secondary)
                         Spacer()
+                        Text("Disabled (Build Unconfigured)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
             }
@@ -388,10 +369,10 @@ struct NextendoSettingsView: View {
                 
                 if enableServerOverride {
                     HStack {
-                        Text("Server API URL")
+                        Text("Custom Server URL")
                             .font(.subheadline)
                         Spacer()
-                        TextField("https://nextendo.network", text: $nextendoServerUrl)
+                        TextField("e.g. http://192.168.1.100:8000", text: $customServerUrl)
                             .multilineTextAlignment(.trailing)
                             .font(.subheadline)
                             .autocapitalization(.none)
@@ -402,7 +383,7 @@ struct NextendoSettingsView: View {
                         Text("Custom Game Server IP")
                             .font(.subheadline)
                         Spacer()
-                        TextField("Empty (No IP)", text: $nextendoServerIp)
+                        TextField("e.g. 192.168.1.100", text: $customServerIp)
                             .multilineTextAlignment(.trailing)
                             .font(.subheadline)
                             .autocapitalization(.none)
@@ -413,7 +394,7 @@ struct NextendoSettingsView: View {
                         Text("Custom NAT Responder IP")
                             .font(.subheadline)
                         Spacer()
-                        TextField("Empty (No IP)", text: $nextendoNatIp)
+                        TextField("e.g. 192.168.1.100", text: $customNatIp)
                             .multilineTextAlignment(.trailing)
                             .font(.subheadline)
                             .autocapitalization(.none)
@@ -555,9 +536,43 @@ struct NextendoSettingsView: View {
         .onChange(of: enableNextendoOnline) { _ in initEnvironmentVariables() }
         .onChange(of: enableServerOverride) { _ in initEnvironmentVariables() }
         .onChange(of: nextendoServerUrl) { _ in initEnvironmentVariables() }
-        .onChange(of: nextendoServerIp) { _ in initEnvironmentVariables() }
-        .onChange(of: nextendoNatIp) { _ in initEnvironmentVariables() }
+        .onChange(of: customServerUrl) { _ in initEnvironmentVariables() }
+        .onChange(of: customServerIp) { _ in initEnvironmentVariables() }
+        .onChange(of: customNatIp) { _ in initEnvironmentVariables() }
         .onChange(of: enableNsoDump) { _ in initEnvironmentVariables() }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("NextendoOAuthCallback"))) { notification in
+            if let callbackUrl = notification.object as? URL {
+                let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+                let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
+                self.showingFullPageOAuth = false
+                self.parseOAuthCallback(url: callbackUrl, codeVerifier: self.currentCodeVerifier, redirectUri: NextendoSecrets.defaultRedirectUri, baseUrl: baseUrl, clientId: NextendoSecrets.oauthClientId)
+            }
+        }
+        .fullScreenCover(isPresented: $showingFullPageOAuth) {
+            if let authUrl = currentAuthUrl {
+                NextendoOAuthWebView(authUrl: authUrl) { callbackUrl in
+                    self.showingFullPageOAuth = false
+                    self.isAuthenticating = false
+                    let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
+                    self.parseOAuthCallback(url: callbackUrl, codeVerifier: self.currentCodeVerifier, redirectUri: NextendoSecrets.defaultRedirectUri, baseUrl: baseUrl, clientId: NextendoSecrets.oauthClientId)
+                } onCancel: {
+                    self.showingFullPageOAuth = false
+                    self.isAuthenticating = false
+                }
+                .ignoresSafeArea()
+            }
+        }
+        .onAppear {
+            guard NextendoSecrets.isOAuthEnabled else { return }
+            if let token = NextendoKeychainHelper.loadToken(), !token.isEmpty {
+                if nextendoAuthToken != token {
+                    nextendoAuthToken = token
+                }
+            } else if !nextendoAuthToken.isEmpty {
+                NextendoKeychainHelper.saveToken(nextendoAuthToken)
+            }
+        }
         .alert("Auth System Message", isPresented: Binding(
             get: { authErrorMessage != nil },
             set: { if !$0 { authErrorMessage = nil } }
@@ -569,10 +584,13 @@ struct NextendoSettingsView: View {
         .alert("Reset Settings", isPresented: $showingResetAlert) {
             Button("Reset", role: .destructive) {
                 enableNextendoOnline = true
-                nextendoServerUrl = "https://nextendo.network"
+                nextendoServerUrl = NextendoSecrets.defaultServerUrl
                 enableServerOverride = false
-                nextendoServerIp = ""
-                nextendoNatIp = ""
+                customServerUrl = ""
+                customServerIp = ""
+                customNatIp = ""
+                UserDefaults.standard.removeObject(forKey: "nextendoServerIp")
+                UserDefaults.standard.removeObject(forKey: "nextendoNatIp")
                 nextendoUserPseudo = ""
                 nextendoFriendCode = ""
                 nextendoAuthToken = ""
@@ -593,101 +611,78 @@ struct NextendoSettingsView: View {
         }
     }
     
-    private func startASWebAuthenticationSession() {
-        let listener = LoopbackOAuthListener()
-        self.loopbackListener = listener
-        
-        listener.start { port in
-            DispatchQueue.main.async {
-                guard let port = port else {
-                    self.authErrorMessage = "Could not start local loopback listener."
-                    return
-                }
-                
-                let pkce = PKCE.generate()
-                let redirectUri = port == 80 ? "http://127.0.0.1/callback" : "http://127.0.0.1:\(port)/callback"
-                let rawBase = self.nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-                let baseUrl = rawBase.isEmpty ? "https://nextendo.network" : rawBase
-                
-                var components = URLComponents(string: "\(baseUrl)/api/oauth/authorize")
-                components?.queryItems = [
-                    URLQueryItem(name: "response_type", value: "code"),
-                    URLQueryItem(name: "client_id", value: "nextendo-emulator"),
-                    URLQueryItem(name: "redirect_uri", value: redirectUri),
-                    URLQueryItem(name: "scope", value: "identity friends"),
-                    URLQueryItem(name: "state", value: pkce.state),
-                    URLQueryItem(name: "code_challenge", value: pkce.challenge),
-                    URLQueryItem(name: "code_challenge_method", value: "S256")
-                ]
-                
-                guard let authUrl = components?.url else { return }
-                
-                self.isAuthenticating = true
-                
-                listener.onCallbackReceived = { callbackUrl in
-                    DispatchQueue.main.async {
-                        self.isAuthenticating = false
-                        self.authSession?.cancel()
-                        self.authSession = nil
-                        self.loopbackListener?.stop()
-                        self.loopbackListener = nil
-                        self.parseOAuthCallback(url: callbackUrl, pkce: pkce, redirectUri: redirectUri, baseUrl: baseUrl)
-                    }
-                }
-                
-                let session = ASWebAuthenticationSession(url: authUrl, callbackURLScheme: "http") { callbackUrl, error in
-                    DispatchQueue.main.async {
-                        self.isAuthenticating = false
-                        self.authSession = nil
-                        self.loopbackListener?.stop()
-                        self.loopbackListener = nil
-                        
-                        if let callbackUrl = callbackUrl {
-                            self.parseOAuthCallback(url: callbackUrl, pkce: pkce, redirectUri: redirectUri, baseUrl: baseUrl)
-                        } else if let error = error as? ASWebAuthenticationSessionError {
-                            if error.code != .canceledLogin {
-                                self.authErrorMessage = "Sign in error: \(error.localizedDescription)"
-                            }
-                        }
-                    }
-                }
-                
-                session.presentationContextProvider = NextendoWebAuthPresenter.shared
-                session.prefersEphemeralWebBrowserSession = false
-                self.authSession = session
-                session.start()
-            }
+    private func startFullPageOAuth() {
+        guard NextendoSecrets.isOAuthEnabled else {
+            self.authErrorMessage = "Nextendo OAuth is disabled because this build was compiled without OAuth credentials."
+            return
         }
+        let pkce = PKCE.generate()
+        self.currentCodeVerifier = pkce.verifier
+        self.currentOAuthState = pkce.state
+        let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
+        let redirectUri = NextendoSecrets.defaultRedirectUri
+        let clientId = NextendoSecrets.oauthClientId
+        
+        var components = URLComponents(string: "\(baseUrl)/api/oauth/authorize")
+        components?.queryItems = [
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "redirect_uri", value: redirectUri),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "scope", value: NextendoSecrets.oauthScopes),
+            URLQueryItem(name: "state", value: pkce.state),
+            URLQueryItem(name: "code_challenge", value: pkce.challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256")
+        ]
+        
+        guard let authUrl = components?.url else {
+            self.authErrorMessage = "Invalid authorization URL configuration."
+            return
+        }
+        
+        self.currentAuthUrl = authUrl
+        self.isAuthenticating = true
+        self.showingFullPageOAuth = true
     }
     
-    private func parseOAuthCallback(url: URL, pkce: PKCE, redirectUri: String, baseUrl: String) {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let queryItems = components.queryItems else { return }
+    private func parseOAuthCallback(url: URL, codeVerifier: String, redirectUri: String, baseUrl: String, clientId: String) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            self.authErrorMessage = "Invalid authorization callback received."
+            return
+        }
         
         var code: String? = nil
         var errorStr: String? = nil
         
-        for item in queryItems {
-            if item.name == "code" { code = item.value }
-            if item.name == "error" { errorStr = item.value }
-            if item.name == "nex_token", let value = item.value, !value.isEmpty {
-                nextendoAuthToken = value
-                return
+        if let queryItems = components.queryItems {
+            for item in queryItems {
+                if item.name == "code" { code = item.value }
+                if item.name == "error" || item.name == "error_description" { errorStr = item.value }
+                if (item.name == "access_token" || item.name == "nex_token"), let val = item.value, !val.isEmpty {
+                    self.handleReceivedToken(token: val, baseUrl: baseUrl)
+                    return
+                }
             }
         }
         
         if let errorStr = errorStr {
-            authErrorMessage = "Authorization failed: \(errorStr)"
+            self.authErrorMessage = "Authorization failed: \(errorStr)"
             return
         }
         
-        guard let authCode = code, !authCode.isEmpty else { return }
+        guard let authCode = code, !authCode.isEmpty else {
+            self.authErrorMessage = "No authorization code returned."
+            return
+        }
         
-        exchangeCodeForToken(code: authCode, pkce: pkce, redirectUri: redirectUri, baseUrl: baseUrl)
+        self.exchangeCodeForToken(code: authCode, codeVerifier: codeVerifier, redirectUri: redirectUri, baseUrl: baseUrl, clientId: clientId)
     }
     
-    private func exchangeCodeForToken(code: String, pkce: PKCE, redirectUri: String, baseUrl: String) {
-        guard let tokenUrl = URL(string: "\(baseUrl)/api/oauth/token") else { return }
+    private func exchangeCodeForToken(code: String, codeVerifier: String, redirectUri: String, baseUrl: String, clientId: String) {
+        guard let tokenUrl = URL(string: "\(baseUrl)/api/oauth/token") else {
+            self.authErrorMessage = "Invalid token endpoint URL."
+            return
+        }
         
         var request = URLRequest(url: tokenUrl)
         request.httpMethod = "POST"
@@ -695,17 +690,25 @@ struct NextendoSettingsView: View {
         
         let bodyComponents = [
             "grant_type": "authorization_code",
+            "client_id": clientId,
             "code": code,
-            "client_id": "nextendo-emulator",
             "redirect_uri": redirectUri,
-            "code_verifier": pkce.verifier
+            "code_verifier": codeVerifier
         ]
         
-        let bodyString = bodyComponents.map { "\($0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }.joined(separator: "&")
+        let bodyString = bodyComponents.map {
+            let key = $0.key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.key
+            let val = $0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value
+            return "\(key)=\(val)"
+        }.joined(separator: "&")
         request.httpBody = bodyString.data(using: .utf8)
+        
+        self.isAuthenticating = true
         
         URLSession.shared.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
+                self.isAuthenticating = false
+                
                 if let error = error {
                     self.authErrorMessage = "Token exchange failed: \(error.localizedDescription)"
                     return
@@ -717,47 +720,78 @@ struct NextendoSettingsView: View {
                     return
                 }
                 
-                if let nexToken = json["nex_token"] as? String, !nexToken.isEmpty {
-                    self.nextendoAuthToken = nexToken
-                    
-                    var usernameStr = ""
-                    var friendCodeStr = ""
-                    var pidVal: UInt64 = 0
-                    
-                    if let account = json["account"] as? [String: Any] {
-                        if let username = account["username"] as? String {
-                            self.nextendoUserPseudo = username
-                            usernameStr = username
-                        }
-                        if let friendCode = account["friend_code"] as? String {
-                            self.nextendoFriendCode = friendCode
-                            friendCodeStr = friendCode
-                        }
-                        if let pidNum = account["pid"] as? UInt64 {
-                            pidVal = pidNum
-                        } else if let pidInt = account["pid"] as? Int {
-                            pidVal = UInt64(pidInt)
-                        } else if let pidStr = account["pid"] as? String, let parsed = UInt64(pidStr) {
-                            pidVal = parsed
-                        }
-                    }
-                    self.nextendoPid = String(pidVal)
-                    
-                    let finalUsername = usernameStr.isEmpty ? self.nextendoUserPseudo : usernameStr
-                    self.syncNextendoProfile(username: finalUsername.isEmpty ? "Nextendo" : finalUsername, token: nexToken, baseUrl: baseUrl, pid: pidVal, friendCode: friendCodeStr)
-                } else if let errorMsg = json["error"] as? String {
+                if let errorMsg = (json["error_description"] as? String) ?? (json["error"] as? String) {
                     self.authErrorMessage = "Authorization error: \(errorMsg)"
-                } else {
-                    self.authErrorMessage = "Could not retrieve NEX token."
+                    return
                 }
+                
+                let token = (json["access_token"] as? String) ?? (json["nex_token"] as? String)
+                guard let validToken = token, !validToken.isEmpty else {
+                    self.authErrorMessage = "Could not retrieve access token."
+                    return
+                }
+                
+                self.handleReceivedToken(token: validToken, baseUrl: baseUrl, initialJson: json)
             }
         }.resume()
     }
     
-    private func syncNextendoProfile(username: String, token: String, baseUrl: String, pid: UInt64, friendCode: String) {
-        let profilePath = URL.documentsDirectory.appendingPathComponent("system").appendingPathComponent("Profiles.json")
+    private func handleReceivedToken(token: String, baseUrl: String, initialJson: [String: Any]? = nil) {
+        NextendoKeychainHelper.saveToken(token)
+        self.nextendoAuthToken = token
+        
+        var inlineUsername = ""
+        var inlineFriendCode = ""
+        var inlinePid: UInt64 = 0
+        
+        if let initialJson = initialJson {
+            let userDict = (initialJson["user"] as? [String: Any]) ?? (initialJson["account"] as? [String: Any])
+            if let userDict = userDict {
+                inlineUsername = (userDict["username"] as? String) ?? ""
+                inlineFriendCode = (userDict["friend_code"] as? String) ?? ""
+                if let pidNum = userDict["pid"] as? UInt64 {
+                    inlinePid = pidNum
+                } else if let pidInt = userDict["pid"] as? Int {
+                    inlinePid = UInt64(pidInt)
+                } else if let pidStr = userDict["pid"] as? String, let parsed = UInt64(pidStr) {
+                    inlinePid = parsed
+                }
+            }
+        }
+        
+        self.fetchUserInfoAndSync(token: token, baseUrl: baseUrl, fallbackUsername: inlineUsername, fallbackFriendCode: inlineFriendCode, fallbackPid: inlinePid)
+    }
+    
+    private func fetchUserInfoAndSync(token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
+        guard let userinfoUrl = URL(string: "\(baseUrl)/api/oauth/userinfo") else {
+            self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
+            return
+        }
+        
+        var request = URLRequest(url: userinfoUrl)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        
+        self.isAuthenticating = true
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let httpResponse = response as? HTTPURLResponse
+            let isUserinfoOk = (httpResponse?.statusCode ?? 500) >= 200 && (httpResponse?.statusCode ?? 500) < 300
+            
+            if isUserinfoOk, let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                self.processUserData(dict: json, token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
+            } else {
+                self.fetchProfileFallback(token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
+            }
+        }.resume()
+    }
+    
+    private func fetchProfileFallback(token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
         guard let profileUrl = URL(string: "\(baseUrl)/api/profile") else {
-            self.applyProfileToRyujinx(name: username, imageData: generateDefaultAvatar(name: username), profilePath: profilePath, pid: pid, nexToken: token, friendCode: friendCode)
+            DispatchQueue.main.async {
+                self.isAuthenticating = false
+                self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
+            }
             return
         }
         
@@ -765,55 +799,103 @@ struct NextendoSettingsView: View {
         request.httpMethod = "GET"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            var avatarData: Data? = nil
-            var profileName = username
-            var finalPid = pid
-            var finalFriendCode = friendCode
-            var finalMiiB64 = ""
-            
+        URLSession.shared.dataTask(with: request) { data, _, _ in
             if let data = data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let profileDict = json["profile"] as? [String: Any] {
-                if let name = profileDict["name"] as? String, !name.isEmpty {
-                    profileName = name
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let dict = (json["profile"] as? [String: Any]) ?? json
+                self.processUserData(dict: dict, token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
+            } else {
+                DispatchQueue.main.async {
+                    self.isAuthenticating = false
+                    self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
                 }
-                if let imageB64 = profileDict["image"] as? String, let decoded = Data(base64Encoded: imageB64) {
-                    avatarData = decoded
-                }
-                if let fc = profileDict["friend_code"] as? String, !fc.isEmpty {
-                    finalFriendCode = fc
-                }
-                if let mii = profileDict["mii"] as? String, !mii.isEmpty {
-                    finalMiiB64 = mii
-                }
-                if let pidNum = profileDict["pid"] as? UInt64 {
-                    finalPid = pidNum
-                } else if let pidInt = profileDict["pid"] as? Int {
-                    finalPid = UInt64(pidInt)
-                } else if let pidStr = profileDict["pid"] as? String, let parsed = UInt64(pidStr) {
-                    finalPid = parsed
-                }
-            }
-            
-            let finalImageData = avatarData ?? self.generateDefaultAvatar(name: profileName)
-            
-            DispatchQueue.main.async {
-                if finalPid != 0 {
-                    self.nextendoPid = String(finalPid)
-                }
-                if !finalFriendCode.isEmpty {
-                    self.nextendoFriendCode = finalFriendCode
-                }
-                if !finalMiiB64.isEmpty {
-                    UserDefaults.standard.set(finalMiiB64, forKey: "nextendoMiiData")
-                    if let miiBytes = Data(base64Encoded: finalMiiB64) {
-                        Ryujinx.injectNextendoMii(data: miiBytes)
-                    }
-                }
-                self.applyProfileToRyujinx(name: profileName, imageData: finalImageData, profilePath: profilePath, pid: finalPid, nexToken: token, friendCode: finalFriendCode, miiData: finalMiiB64)
             }
         }.resume()
+    }
+    
+    private func processUserData(dict: [String: Any], token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
+        var profileName = fallbackUsername
+        if let name = (dict["username"] as? String) ?? (dict["name"] as? String) ?? (dict["pseudo"] as? String), !name.isEmpty {
+            profileName = name
+        }
+        
+        var finalPid = fallbackPid
+        if let pidNum = dict["pid"] as? UInt64 {
+            finalPid = pidNum
+        } else if let pidInt = dict["pid"] as? Int {
+            finalPid = UInt64(pidInt)
+        } else if let pidStr = dict["pid"] as? String, let parsed = UInt64(pidStr) {
+            finalPid = parsed
+        }
+        
+        var finalFriendCode = fallbackFriendCode
+        if let fc = (dict["friend_code"] as? String) ?? (dict["friendCode"] as? String), !fc.isEmpty {
+            finalFriendCode = fc
+        }
+        
+        var finalMiiB64 = ""
+        if let mii = dict["mii"] as? String, !mii.isEmpty {
+            finalMiiB64 = mii
+        }
+        
+        var avatarUrlStr: String? = nil
+        if let aUrl = (dict["avatar_url"] as? String) ?? (dict["avatar"] as? String) ?? (dict["icon_url"] as? String), !aUrl.isEmpty {
+            avatarUrlStr = aUrl
+        }
+        
+        var avatarData: Data? = nil
+        if let imageB64 = dict["image"] as? String, let decoded = Data(base64Encoded: imageB64) {
+            avatarData = decoded
+        }
+        
+        if let avatarUrlStr = avatarUrlStr {
+            let fullAvatarUrl: URL?
+            if avatarUrlStr.hasPrefix("http://") || avatarUrlStr.hasPrefix("https://") {
+                fullAvatarUrl = URL(string: avatarUrlStr)
+            } else if avatarUrlStr.hasPrefix("/") {
+                fullAvatarUrl = URL(string: "\(baseUrl)\(avatarUrlStr)")
+            } else {
+                fullAvatarUrl = URL(string: "\(baseUrl)/\(avatarUrlStr)")
+            }
+            
+            if let fullAvatarUrl = fullAvatarUrl {
+                URLSession.shared.dataTask(with: fullAvatarUrl) { data, _, _ in
+                    DispatchQueue.main.async {
+                        self.isAuthenticating = false
+                        let finalAvatar = data ?? avatarData
+                        self.finalizeProfileSync(name: profileName.isEmpty ? "Nextendo" : profileName, token: token, baseUrl: baseUrl, pid: finalPid, friendCode: finalFriendCode, avatarData: finalAvatar, miiData: finalMiiB64)
+                    }
+                }.resume()
+                return
+            }
+        }
+        
+        DispatchQueue.main.async {
+            self.isAuthenticating = false
+            self.finalizeProfileSync(name: profileName.isEmpty ? "Nextendo" : profileName, token: token, baseUrl: baseUrl, pid: finalPid, friendCode: finalFriendCode, avatarData: avatarData, miiData: finalMiiB64)
+        }
+    }
+    
+    private func finalizeProfileSync(name: String, token: String, baseUrl: String, pid: UInt64, friendCode: String, avatarData: Data?, miiData: String) {
+        if pid != 0 {
+            self.nextendoPid = String(pid)
+        }
+        if !name.isEmpty {
+            self.nextendoUserPseudo = name
+        }
+        if !friendCode.isEmpty {
+            self.nextendoFriendCode = friendCode
+        }
+        if !miiData.isEmpty {
+            UserDefaults.standard.set(miiData, forKey: "nextendoMiiData")
+            if let miiBytes = Data(base64Encoded: miiData) {
+                Ryujinx.injectNextendoMii(data: miiBytes)
+            }
+        }
+        
+        let profilePath = URL.documentsDirectory.appendingPathComponent("system").appendingPathComponent("Profiles.json")
+        let finalImageData = avatarData ?? self.generateDefaultAvatar(name: name)
+        self.applyProfileToRyujinx(name: name, imageData: finalImageData, profilePath: profilePath, pid: pid, nexToken: token, friendCode: friendCode, miiData: miiData)
     }
 
     private func applyProfileToRyujinx(name: String, imageData: Data, profilePath: URL, pid: UInt64, nexToken: String, friendCode: String, miiData: String = "") {

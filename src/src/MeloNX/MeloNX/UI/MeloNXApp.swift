@@ -36,27 +36,61 @@ func initEnvironmentVariables(reloadAccount: Bool = true) {
     
     let enableNextendo = defaults.object(forKey: "enableNextendoOnline") as? Bool ?? true
     let enableServerOverride = defaults.bool(forKey: "enableServerOverride")
-    let serverUrl = defaults.string(forKey: "nextendoServerUrl") ?? "https://nextendo.network"
-    let serverIp = defaults.string(forKey: "nextendoServerIp")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let natIp = defaults.string(forKey: "nextendoNatIp")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    let nexToken = defaults.string(forKey: "nextendoAuthToken") ?? ""
     
-    let effectiveServerIp: String
-    if !serverIp.isEmpty {
-        effectiveServerIp = serverIp
-    } else {
-        let targetHost = URL(string: serverUrl.isEmpty ? "https://nextendo.network" : serverUrl)?.host ?? "nextendo.network"
-        effectiveServerIp = resolveHostToIPv4(targetHost) ?? "172.67.190.75"
+    // Custom Server Override Settings (User-defined, completely independent of Nextendo mode)
+    let customServerUrl = defaults.string(forKey: "customServerUrl")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let customServerIp = defaults.string(forKey: "customServerIp")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let customNatIp = defaults.string(forKey: "customNatIp")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    
+    // Clean up any legacy shared keys
+    if defaults.object(forKey: "nextendoServerIp") != nil {
+        defaults.removeObject(forKey: "nextendoServerIp")
     }
-    let effectiveNatIp = natIp.isEmpty ? effectiveServerIp : natIp
+    if defaults.object(forKey: "nextendoNatIp") != nil {
+        defaults.removeObject(forKey: "nextendoNatIp")
+    }
+    
+    // Nextendo Mode Settings (Uses secret Nextendo build constants)
+    let nextendoServerUrl = defaults.string(forKey: "nextendoServerUrl") ?? NextendoSecrets.defaultServerUrl
+    let nextendoEffectiveServerUrl = nextendoServerUrl.isEmpty ? NextendoSecrets.defaultServerUrl : nextendoServerUrl
+    let nextendoEffectiveServerIp = NextendoSecrets.defaultServerIp.isEmpty ? "127.0.0.1" : NextendoSecrets.defaultServerIp
+    let nextendoEffectiveNatIp = NextendoSecrets.defaultNatIp.isEmpty ? "127.0.0.1" : NextendoSecrets.defaultNatIp
+    
+    let keychainToken = NextendoKeychainHelper.loadToken()
+    let nexToken: String = {
+        guard NextendoSecrets.isOAuthEnabled else {
+            return ""
+        }
+        if let token = keychainToken, !token.isEmpty {
+            return token
+        }
+        let fallback = defaults.string(forKey: "nextendoAuthToken") ?? ""
+        if !fallback.isEmpty {
+            NextendoKeychainHelper.saveToken(fallback)
+        }
+        return fallback
+    }()
     
     // Base environment variables
     for env in environment { env.set() }
     
-    if enableNextendo && !enableServerOverride {
-        setenv("NEXTENDO_SERVER_IP", effectiveServerIp, 1)
-        setenv("NEXTENDO_NAT_IP", effectiveNatIp, 1)
-        setenv("NEXTENDO_API", serverUrl.isEmpty ? "https://nextendo.network" : serverUrl, 1)
+    if enableServerOverride {
+        // Custom Server Mode: Uses IPs defined by the user in Custom server override, ignoring build constants
+        let effectiveCustomIp = customServerIp.isEmpty ? "127.0.0.1" : customServerIp
+        let effectiveCustomNatIp = customNatIp.isEmpty ? effectiveCustomIp : customNatIp
+        let effectiveCustomUrl = customServerUrl.isEmpty ? "http://\(effectiveCustomIp)" : customServerUrl
+        
+        setenv("NEXTENDO_SERVER_IP", effectiveCustomIp, 1)
+        setenv("NEXTENDO_NAT_IP", effectiveCustomNatIp, 1)
+        setenv("NEXTENDO_API", effectiveCustomUrl, 1)
+        setenv("NEXTENDO_HORS_NEXTENDO", "1", 1)
+        unsetenv("NEXTENDO_SITE")
+        unsetenv("NEXTENDO_TOKEN")
+    } else if enableNextendo {
+        // Nextendo Network Mode: Uses secret Nextendo IPs from build constants
+        setenv("NEXTENDO_SERVER_IP", nextendoEffectiveServerIp, 1)
+        setenv("NEXTENDO_NAT_IP", nextendoEffectiveNatIp, 1)
+        setenv("NEXTENDO_API", nextendoEffectiveServerUrl, 1)
         setenv("NEXTENDO_SITE", "https://nextendo.network", 1)
         setenv("NEXTENDO_NPLN_DELAY_MS", "3000", 1)
         unsetenv("NEXTENDO_HORS_NEXTENDO")
@@ -91,12 +125,6 @@ func initEnvironmentVariables(reloadAccount: Bool = true) {
         } else {
             unsetenv("NEXTENDO_TOKEN")
         }
-    } else if enableServerOverride {
-        setenv("NEXTENDO_SERVER_IP", serverIp, 1)
-        setenv("NEXTENDO_NAT_IP", natIp, 1)
-        setenv("NEXTENDO_API", serverUrl, 1)
-        setenv("NEXTENDO_HORS_NEXTENDO", "1", 1)
-        unsetenv("NEXTENDO_TOKEN")
     } else {
         unsetenv("NEXTENDO_SERVER_IP")
         unsetenv("NEXTENDO_NAT_IP")
@@ -197,24 +225,4 @@ struct MeloNXApp: App {
         var mutableValue = value
         return Data(bytes: &mutableValue, count: MemoryLayout<Float>.size)
     }
-}
-
-func resolveHostToIPv4(_ host: String) -> String? {
-    guard !host.isEmpty else { return nil }
-    var hints = addrinfo()
-    hints.ai_family = AF_INET
-    hints.ai_socktype = SOCK_STREAM
-    
-    var res: UnsafeMutablePointer<addrinfo>?
-    guard getaddrinfo(host, nil, &hints, &res) == 0, let first = res, let aiAddr = first.pointee.ai_addr else {
-        return nil
-    }
-    defer { freeaddrinfo(res) }
-    
-    let sockaddrIn = aiAddr.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee }
-    var ipBuffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-    var addr = sockaddrIn.sin_addr
-    inet_ntop(AF_INET, &addr, &ipBuffer, socklen_t(INET_ADDRSTRLEN))
-    let ipString = String(cString: ipBuffer)
-    return ipString.isEmpty ? nil : ipString
 }

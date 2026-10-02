@@ -164,6 +164,10 @@ class AppEnvironment {
                         exit(0)
                     }
                 }
+            case "oauth":
+                if NextendoSecrets.isOAuthEnabled {
+                    NotificationCenter.default.post(name: Notification.Name("NextendoOAuthCallback"), object: url)
+                }
             default:
                 return
             }
