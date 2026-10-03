@@ -177,6 +177,7 @@ struct MeloNXApp: App {
         JIT26BreakpointHandler()
         initEnvironmentVariables(reloadAccount: false)
         Ryujinx.initialize()
+        NextendoProfileHelper.shared.ensureNextendoProfileSelected()
         Ryujinx.reloadNextendoAccount()
         RyujinxController.shared.loadConfig()
         ThemeManager.shared.applyUIKitAppearance()
@@ -189,6 +190,7 @@ struct MeloNXApp: App {
                 .environmentObject(themeManager)
                 .withAppTheme()
                 .onAppear() {
+                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
                     UIDevice.current.beginGeneratingDeviceOrientationNotifications()
                     
                     configureAudioSession()

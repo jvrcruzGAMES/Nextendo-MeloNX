@@ -22,18 +22,21 @@
 ### Key Highlights
 
 - **Nextendo Network Integration**: Native support for NPLN and NEX (PRUDP) game traffic routing.
-- **Account & Profile Sync**: In-app native credentials authentication (`/api/login`), automatic profile synchronization, and secure iOS Keychain storage with password manager AutoFill support for `nextendo.network`.
+- **Account & Profile Sync**: Native OAuth 2.0 PKCE sign-in via `ASWebAuthenticationSession` with automatic NEX game token retrieval (`/api/nex-token`), automated profile synchronization, and secure iOS Keychain storage.
 - **Custom Server Override**: Built-in private server mode for connecting to self-hosted or LAN instances with isolated configuration that completely decouples from Nextendo secrets.
 - **Automated Fallbacks**:
   - Missing network IPs automatically fallback to `127.0.0.1`.
   - Missing account configuration safely operates in offline/guest mode while keeping the emulator fully functional.
 - **Automated Nightly CI**: Pre-configured GitHub Actions workflow to build and package unsigned or signed sideloadable IPAs (`.ipa`) and application bundles (`.app.zip`).
 
-> [!IMPORTANT]
-> **Nextendo OAuth Support & Permissions Limitation**
-> Nextendo's public OAuth 2.0 system (`/api/oauth/authorize` & `/api/oauth/token`) currently **does not issue NEX authentication tokens (`nex_token`) to third-party applications**. The Nextendo server-side infrastructure strictly reserves `nex_token` generation for its official desktop client ID (`nextendo-emulator`) using local loopback redirection.
->
-> Because third-party developer client credentials (`nxc_...`) lack server permissions to receive NEX tokens via OAuth, **in-app native credential login (`/api/login`) is used instead**. This directly retrieves the authentic NEX HMAC token, persistent PID, and friend code required for online multiplayer and matchmaking in titles such as *Mario Kart 8 Deluxe*, *Splatoon 2*, and *Splatoon 3*. Full password manager AutoFill (iCloud Keychain, 1Password, Bitwarden) is supported via the associated domain `webcredentials:nextendo.network`. The underlying OAuth implementation remains preserved in code for future use when server permissions are expanded.
+> [!NOTE]
+> **Nextendo OAuth & NEX Token Flow**
+> Nextendo-MeloNX implements the official Nextendo Developers OAuth 2.0 PKCE standard:
+> 1. Authentication opens a system dialog with `ASWebAuthenticationSession` navigating to `https://nextendo.network/api/oauth/authorize`.
+> 2. The authorization code is exchanged at `POST /api/oauth/token` for an account access token.
+> 3. Following the developer specification (Section 10: Game Login), the emulator retrieves the authentic signed NEX login token (`nx2.`) via `GET /api/nex-token` with `Authorization: Bearer <access_token>`.
+> 4. The player profile, avatar, friend code, and NEX claim are automatically synchronized and locked as the active profile in MeloNX's Profile Manager and Ryujinx.
+> 5. Direct credential sign-in (`/api/login`) is also supported with password manager AutoFill via `webcredentials:nextendo.network`.
 
 ---
 

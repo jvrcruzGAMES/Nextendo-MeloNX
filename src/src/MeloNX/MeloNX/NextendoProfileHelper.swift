@@ -9,6 +9,23 @@
 
 import Foundation
 import UIKit
+import AuthenticationServices
+import CommonCrypto
+
+public struct NexTokenResult {
+    public let nexToken: String
+    public let pid: UInt64
+    public let username: String
+    public let friendCode: String
+    
+    public init(nexToken: String, pid: UInt64, username: String, friendCode: String) {
+        self.nexToken = nexToken
+        self.pid = pid
+        self.username = username
+        self.friendCode = friendCode
+    }
+}
+
 
 public struct NextendoUserInfo {
     public var pid: UInt64
@@ -690,5 +707,431 @@ public final class NextendoProfileHelper {
         UserDefaults.standard.removeObject(forKey: "nextendoProfileUserId")
         NotificationCenter.default.post(name: Notification.Name("NextendoProfileUpdated"), object: nil)
     }
+    
+    // MARK: - NEX Token Retrieval (Nextendo Developers Section 10)
+    
+    /// Obtains the signed NEX login token (prefixed with nx2.) from Nextendo using an OAuth Bearer access token.
+    /// URL: GET /api/nex-token
+    /// Headers: Authorization: Bearer <oauth_access_token>
+    public func fetchNexToken(
+        accessToken: String,
+        baseUrl: String = NextendoProfileHelper.resolveBaseUrl(),
+        completion: @escaping (Result<NexTokenResult, Error>) -> Void
+    ) {
+        let cleanToken = accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanToken.isEmpty else {
+            completion(.failure(NSError(domain: "NextendoAuth", code: -1, userInfo: [NSLocalizedDescriptionKey: "Access token is empty."])))
+            return
+        }
+        
+        guard let url = URL(string: "\(baseUrl)/api/nex-token") else {
+            completion(.failure(URLError(.badURL)))
+            return
+        }
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(cleanToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(NextendoSecrets.oauthClientId, forHTTPHeaderField: "X-Nextendo-Client-Id")
+        request.timeoutInterval = 30.0
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                completion(.failure(error))
+                return
+            }
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                completion(.failure(URLError(.badServerResponse)))
+                return
+            }
+            
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(.failure(NSError(domain: "NextendoAuth", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON response from /api/nex-token (HTTP \(httpResponse.statusCode))."])))
+                return
+            }
+            
+            if httpResponse.statusCode != 200 {
+                let err = (json["error"] as? String) ?? (json["message"] as? String) ?? "Failed to obtain NEX token (HTTP \(httpResponse.statusCode))."
+                completion(.failure(NSError(domain: "NextendoAuth", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: err])))
+                return
+            }
+            
+            guard let nexToken = json["nex_token"] as? String, !nexToken.isEmpty else {
+                completion(.failure(NSError(domain: "NextendoAuth", code: -2, userInfo: [NSLocalizedDescriptionKey: "No nex_token returned from /api/nex-token."])))
+                return
+            }
+            
+            var pid: UInt64 = 0
+            if let pNum = json["pid"] as? UInt64 {
+                pid = pNum
+            } else if let pInt = json["pid"] as? Int {
+                pid = UInt64(pInt)
+            } else if let pStr = json["pid"] as? String, let p = UInt64(pStr) {
+                pid = p
+            }
+            
+            let username = (json["username"] as? String) ?? ""
+            let friendCode = (json["friend_code"] as? String) ?? ""
+            
+            completion(.success(NexTokenResult(
+                nexToken: nexToken,
+                pid: pid,
+                username: username,
+                friendCode: friendCode
+            )))
+        }.resume()
+    }
+    
+    // MARK: - Selected Profile Enforcement
+    
+    public var isConnected: Bool {
+        let creds = NextendoKeychainHelper.loadCredentials()
+        let hasNexToken = !(creds?.nexToken.isEmpty ?? true) || !(UserDefaults.standard.string(forKey: "nextendoNexToken")?.isEmpty ?? true)
+        let hasToken = !(creds?.token.isEmpty ?? true) || !(UserDefaults.standard.string(forKey: "nextendoAuthToken")?.isEmpty ?? true)
+        let pid = creds?.pid ?? UserDefaults.standard.string(forKey: "nextendoPid") ?? ""
+        return (hasNexToken || hasToken) && (!pid.isEmpty && pid != "0")
+    }
+    
+    /// Guarantees that the active (selected) profile in Profiles.json and Ryujinx is the Nextendo profile
+    /// if the user is authenticated, even across app restarts.
+    @discardableResult
+    public func ensureNextendoProfileSelected() -> Bool {
+        guard isConnected else { return false }
+        
+        let profilePath = NextendoProfileHelper.profilePath
+        guard let data = try? Data(contentsOf: profilePath),
+              var profiles = try? JSONDecoder().decode(Profiles.self, from: data) else {
+            return false
+        }
+        
+        let boundProfileId = UserDefaults.standard.string(forKey: "nextendoProfileUserId") ?? ""
+        let savedPseudo = UserDefaults.standard.string(forKey: "nextendoUserPseudo") ?? ""
+        
+        let targetIndex = profiles.profiles.firstIndex(where: {
+            (!boundProfileId.isEmpty && $0.user_id == boundProfileId) ||
+            (!savedPseudo.isEmpty && $0.name.lowercased() == savedPseudo.lowercased())
+        })
+        
+        // If the profile does not exist in Profiles.json, re-create and apply it
+        if targetIndex == nil {
+            if let creds = NextendoKeychainHelper.loadCredentials(), !creds.nexToken.isEmpty {
+                let pidNum = UInt64(creds.pid) ?? 0
+                let mii = UserDefaults.standard.string(forKey: "nextendoMiiData") ?? ""
+                self.applyNextendoProfile(
+                    name: creds.username.isEmpty ? "Nextendo" : creds.username,
+                    imageData: nil,
+                    pid: pidNum,
+                    nexToken: creds.nexToken,
+                    friendCode: creds.friendCode,
+                    miiData: mii
+                )
+                return true
+            }
+            return false
+        }
+        
+        guard let index = targetIndex else { return false }
+        let targetProfile = profiles.profiles[index]
+        
+        if boundProfileId != targetProfile.user_id {
+            UserDefaults.standard.set(targetProfile.user_id, forKey: "nextendoProfileUserId")
+        }
+        
+        if profiles.last_opened == targetProfile.user_id {
+            return false
+        }
+        
+        if !profiles.last_opened.isEmpty {
+            Ryujinx.closeUser(userId: profiles.last_opened)
+        }
+        Ryujinx.openUser(userId: targetProfile.user_id)
+        profiles.last_opened = targetProfile.user_id
+        
+        if let encoded = try? JSONEncoder().encode(profiles) {
+            try? encoded.write(to: profilePath)
+        }
+        
+        Ryujinx.refreshAccountManager()
+        Ryujinx.reloadNextendoAccount()
+        initEnvironmentVariables(reloadAccount: true)
+        NotificationCenter.default.post(name: Notification.Name("NextendoProfileUpdated"), object: nil)
+        
+        return true
+    }
 }
+
+// MARK: - Native ASWebAuthenticationSession OAuth Manager
+
+public final class NextendoOAuthManager: NSObject, ASWebAuthenticationPresentationContextProviding {
+    public static let shared = NextendoOAuthManager()
+    
+    private var authSession: ASWebAuthenticationSession?
+    
+    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap { $0.windows }.first { $0.isKeyWindow }
+        return window ?? ASPresentationAnchor()
+    }
+    
+    public func startOAuth(
+        baseUrl: String = NextendoProfileHelper.resolveBaseUrl(),
+        clientId: String = NextendoSecrets.oauthClientId,
+        redirectUri: String = NextendoSecrets.defaultRedirectUri,
+        scopes: String = NextendoSecrets.oauthScopes,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard NextendoSecrets.isOAuthEnabled else {
+            completion(false, "Nextendo OAuth is disabled because this build was compiled without OAuth credentials.")
+            return
+        }
+        
+        let verifier = generateCodeVerifier()
+        let challenge = generateCodeChallenge(from: verifier)
+        let state = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+        
+        guard var components = URLComponents(string: "\(baseUrl)/api/oauth/authorize") else {
+            completion(false, "Invalid authorization URL configuration.")
+            return
+        }
+        
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "response_type", value: "code"),
+            URLQueryItem(name: "redirect_uri", value: redirectUri),
+            URLQueryItem(name: "code_challenge", value: challenge),
+            URLQueryItem(name: "code_challenge_method", value: "S256"),
+            URLQueryItem(name: "state", value: state),
+            URLQueryItem(name: "scope", value: scopes)
+        ]
+        
+        guard let authUrl = components.url else {
+            completion(false, "Could not generate authorization URL.")
+            return
+        }
+        
+        let callbackScheme = URL(string: redirectUri)?.scheme ?? "melonx"
+        
+        let session = ASWebAuthenticationSession(
+            url: authUrl,
+            callbackURLScheme: callbackScheme
+        ) { [weak self] callbackUrl, error in
+            guard let self = self else { return }
+            
+            if let error = error as? ASWebAuthenticationSessionError, error.code == .canceledLogin {
+                // User cancelled cleanly
+                completion(false, nil)
+                return
+            }
+            
+            if let error = error {
+                completion(false, error.localizedDescription)
+                return
+            }
+            
+            guard let callbackUrl = callbackUrl else {
+                completion(false, "No response returned from authentication session.")
+                return
+            }
+            
+            self.handleCallback(
+                callbackUrl: callbackUrl,
+                expectedState: state,
+                codeVerifier: verifier,
+                redirectUri: redirectUri,
+                baseUrl: baseUrl,
+                clientId: clientId,
+                completion: completion
+            )
+        }
+        
+        session.presentationContextProvider = self
+        session.prefersEphemeralWebBrowserSession = false
+        self.authSession = session
+        session.start()
+    }
+    
+    private func handleCallback(
+        callbackUrl: URL,
+        expectedState: String,
+        codeVerifier: String,
+        redirectUri: String,
+        baseUrl: String,
+        clientId: String,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard let components = URLComponents(url: callbackUrl, resolvingAgainstBaseURL: false) else {
+            completion(false, "Invalid callback URL format.")
+            return
+        }
+        
+        let queryItems = components.queryItems ?? []
+        let code = queryItems.first(where: { $0.name == "code" })?.value
+        let state = queryItems.first(where: { $0.name == "state" })?.value
+        let errorDesc = queryItems.first(where: { $0.name == "error_description" || $0.name == "error" })?.value
+        
+        if let errorDesc = errorDesc, !errorDesc.isEmpty {
+            completion(false, "Authentication refused: \(errorDesc)")
+            return
+        }
+        
+        if let state = state, state != expectedState {
+            completion(false, "Security state verification failed.")
+            return
+        }
+        
+        guard let authCode = code, !authCode.isEmpty else {
+            completion(false, "No authorization code returned from Nextendo.")
+            return
+        }
+        
+        exchangeCodeForTokens(
+            code: authCode,
+            codeVerifier: codeVerifier,
+            redirectUri: redirectUri,
+            baseUrl: baseUrl,
+            clientId: clientId,
+            completion: completion
+        )
+    }
+    
+    private func exchangeCodeForTokens(
+        code: String,
+        codeVerifier: String,
+        redirectUri: String,
+        baseUrl: String,
+        clientId: String,
+        completion: @escaping (Bool, String?) -> Void
+    ) {
+        guard let tokenUrl = URL(string: "\(baseUrl)/api/oauth/token") else {
+            completion(false, "Invalid token endpoint URL.")
+            return
+        }
+        
+        var request = URLRequest(url: tokenUrl)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        
+        let bodyComponents = [
+            "grant_type": "authorization_code",
+            "client_id": clientId,
+            "code": code,
+            "redirect_uri": redirectUri,
+            "code_verifier": codeVerifier
+        ]
+        
+        let bodyString = bodyComponents.map {
+            let key = $0.key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.key
+            let val = $0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value
+            return "\(key)=\(val)"
+        }.joined(separator: "&")
+        request.httpBody = bodyString.data(using: .utf8)
+        
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                DispatchQueue.main.async { completion(false, "Token exchange failed: \(error.localizedDescription)") }
+                return
+            }
+            
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                DispatchQueue.main.async { completion(false, "Invalid response from Nextendo token service.") }
+                return
+            }
+            
+            if let errorMsg = (json["error_description"] as? String) ?? (json["error"] as? String) {
+                DispatchQueue.main.async { completion(false, errorMsg) }
+                return
+            }
+            
+            guard let accessToken = json["access_token"] as? String, !accessToken.isEmpty else {
+                DispatchQueue.main.async { completion(false, "No access token received from Nextendo.") }
+                return
+            }
+            
+            // If nex_token was included directly, use it
+            if let directNex = json["nex_token"] as? String, !directNex.isEmpty {
+                let userDict = (json["account"] as? [String: Any]) ?? (json["user"] as? [String: Any])
+                let initialPid: UInt64
+                if let p = userDict?["pid"] as? UInt64 { initialPid = p }
+                else if let p = userDict?["pid"] as? Int { initialPid = UInt64(p) }
+                else if let pStr = userDict?["pid"] as? String, let p = UInt64(pStr) { initialPid = p }
+                else { initialPid = 0 }
+                
+                let initialName = (userDict?["username"] as? String) ?? ""
+                let initialFc = (userDict?["friend_code"] as? String) ?? ""
+                let initialMii = (userDict?["mii"] as? String) ?? ""
+                
+                NextendoProfileHelper.shared.fetchAndSyncProfile(
+                    authToken: accessToken,
+                    nexToken: directNex,
+                    baseUrl: baseUrl,
+                    fallbackPid: initialPid,
+                    fallbackUsername: initialName,
+                    fallbackFriendCode: initialFc,
+                    fallbackMii: initialMii
+                ) { success, _ in
+                    DispatchQueue.main.async {
+                        if success {
+                            NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+                        }
+                        completion(success, success ? nil : "Failed to sync profile.")
+                    }
+                }
+                return
+            }
+            
+            // Retrieve NEX token via newly documented GET /api/nex-token
+            NextendoProfileHelper.shared.fetchNexToken(accessToken: accessToken, baseUrl: baseUrl) { result in
+                switch result {
+                case .success(let nexRes):
+                    NextendoProfileHelper.shared.fetchAndSyncProfile(
+                        authToken: accessToken,
+                        nexToken: nexRes.nexToken,
+                        baseUrl: baseUrl,
+                        fallbackPid: nexRes.pid,
+                        fallbackUsername: nexRes.username,
+                        fallbackFriendCode: nexRes.friendCode
+                    ) { success, _ in
+                        DispatchQueue.main.async {
+                            if success {
+                                NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+                            }
+                            completion(success, success ? nil : "Failed to sync profile.")
+                        }
+                    }
+                case .failure(let err):
+                    DispatchQueue.main.async {
+                        completion(false, "Failed to retrieve NEX game token: \(err.localizedDescription)")
+                    }
+                }
+            }
+        }.resume()
+    }
+    
+    private func generateCodeVerifier() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+    
+    private func generateCodeChallenge(from verifier: String) -> String {
+        guard let data = verifier.data(using: .utf8) else { return verifier }
+        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        data.withUnsafeBytes {
+            _ = CC_SHA256($0.baseAddress, CC_LONG(data.count), &hash)
+        }
+        return Data(hash).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}
+
 

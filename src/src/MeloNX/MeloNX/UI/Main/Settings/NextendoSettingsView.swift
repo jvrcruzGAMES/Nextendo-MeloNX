@@ -251,15 +251,35 @@ struct NextendoSettingsView: View {
                     .padding(.vertical, 4)
                     
                     Button(action: {
+                        startOAuthLogin()
+                    }) {
+                        HStack {
+                            Label("Sign In with Nextendo", systemImage: "globe")
+                                .font(.subheadline.weight(.semibold))
+                            Spacer()
+                            if isAuthenticating {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                            } else {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .disabled(isAuthenticating)
+                    
+                    Button(action: {
                         loginErrorMessage = nil
                         showingCredentialsLogin = true
                     }) {
                         HStack {
-                            Label("Sign In with Nextendo Account", systemImage: "person.crop.circle.badge.checkmark")
-                                .font(.subheadline.weight(.medium))
+                            Label("Sign In with Password", systemImage: "key.fill")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
                             Spacer()
                             Image(systemName: "chevron.right")
-                                .font(.caption)
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -267,10 +287,11 @@ struct NextendoSettingsView: View {
                     Link(destination: URL(string: "https://nextendo.network/register")!) {
                         HStack {
                             Label("Create Nextendo Account", systemImage: "person.badge.plus")
-                                .font(.subheadline)
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
                             Spacer()
                             Image(systemName: "arrow.up.right")
-                                .font(.caption)
+                                .font(.caption2)
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -944,15 +965,41 @@ struct NextendoSettingsView: View {
                 
                 let accessToken = (json["access_token"] as? String) ?? ""
                 let nexToken = (json["nex_token"] as? String) ?? ""
-                let effectiveAuth = !accessToken.isEmpty ? accessToken : nexToken
-                let effectiveNex = nexToken
                 
-                guard !effectiveAuth.isEmpty else {
+                guard !accessToken.isEmpty else {
                     self.authErrorMessage = "Could not retrieve access token."
                     return
                 }
                 
-                self.handleReceivedToken(authToken: effectiveAuth, nexToken: effectiveNex, baseUrl: baseUrl, initialJson: json)
+                if nexToken.isEmpty {
+                    // Fetch NEX token via newly documented GET /api/nex-token
+                    self.isAuthenticating = true
+                    NextendoProfileHelper.shared.fetchNexToken(accessToken: accessToken, baseUrl: baseUrl) { result in
+                        DispatchQueue.main.async {
+                            self.isAuthenticating = false
+                            switch result {
+                            case .success(let nexRes):
+                                self.handleReceivedToken(
+                                    authToken: accessToken,
+                                    nexToken: nexRes.nexToken,
+                                    baseUrl: baseUrl,
+                                    initialJson: [
+                                        "account": [
+                                            "pid": nexRes.pid,
+                                            "username": nexRes.username,
+                                            "friend_code": nexRes.friendCode
+                                        ]
+                                    ]
+                                )
+                            case .failure(let err):
+                                self.authErrorMessage = "Failed to retrieve NEX game token: \(err.localizedDescription)"
+                            }
+                        }
+                    }
+                    return
+                }
+                
+                self.handleReceivedToken(authToken: accessToken, nexToken: nexToken, baseUrl: baseUrl, initialJson: json)
             }
         }.resume()
     }
@@ -991,12 +1038,32 @@ struct NextendoSettingsView: View {
         ) { success, _ in
             DispatchQueue.main.async {
                 self.isAuthenticating = false
+                if success {
+                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+                }
                 self.refreshAccountState()
             }
         }
     }
 
-
+    private func startOAuthLogin() {
+        authErrorMessage = nil
+        isAuthenticating = true
+        let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
+        
+        NextendoOAuthManager.shared.startOAuth(baseUrl: baseUrl) { success, error in
+            DispatchQueue.main.async {
+                self.isAuthenticating = false
+                if success {
+                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+                    self.refreshAccountState()
+                } else if let error = error {
+                    self.authErrorMessage = error
+                }
+            }
+        }
+    }
 
     private func submitCredentialsLogin() {
         let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1015,6 +1082,7 @@ struct NextendoSettingsView: View {
                     self.showingCredentialsLogin = false
                     self.loginPassword = ""
                     self.loginErrorMessage = nil
+                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
                     self.refreshAccountState()
                 } else {
                     self.loginErrorMessage = error ?? "Failed to sign in. Please verify your credentials."
@@ -1024,6 +1092,9 @@ struct NextendoSettingsView: View {
     }
 
     private func refreshAccountState() {
+        if NextendoProfileHelper.shared.isConnected {
+            NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+        }
         if let creds = NextendoKeychainHelper.loadCredentials() {
             if !creds.authToken.isEmpty {
                 nextendoAuthToken = creds.authToken

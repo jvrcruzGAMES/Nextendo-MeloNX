@@ -42,6 +42,18 @@ struct AccountSelector: View {
                     
                     CenterScrollView(profiles.profiles) { profile in
                         Button {
+                            if NextendoProfileHelper.shared.isConnected {
+                                let boundProfileId = UserDefaults.standard.string(forKey: "nextendoProfileUserId") ?? ""
+                                let savedPseudo = UserDefaults.standard.string(forKey: "nextendoUserPseudo") ?? ""
+                                let isNextendo = (!boundProfileId.isEmpty && profile.user_id == boundProfileId) ||
+                                                 (!savedPseudo.isEmpty && profile.name.lowercased() == savedPseudo.lowercased())
+                                if !isNextendo {
+                                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+                                    loadAccounts()
+                                    callback(true)
+                                    return
+                                }
+                            }
                             if profiles.last_opened != profile.user_id {
                                 Ryujinx.closeUser(userId: profiles.last_opened)
                                 
@@ -119,6 +131,9 @@ struct AccountSelector: View {
     }
     
     func loadAccounts() {
+        if NextendoProfileHelper.shared.isConnected {
+            NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+        }
         do {
             let data = try Data(contentsOf: profilePath)
             profiles = try JSONDecoder().decode(Profiles.self, from: data)

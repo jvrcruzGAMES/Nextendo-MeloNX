@@ -23,16 +23,17 @@ struct AccountManagerView: View {
     private var nextendoPid: String {
         NextendoKeychainHelper.loadCredentials()?.pid ?? UserDefaults.standard.string(forKey: "nextendoPid") ?? "0"
     }
+    @State private var showingNextendoLockedAlert = false
+    
     private var isNextendoConnected: Bool {
-        guard let creds = NextendoKeychainHelper.loadCredentials() else {
-            let token = UserDefaults.standard.string(forKey: "nextendoAuthToken") ?? ""
-            let pid = UserDefaults.standard.string(forKey: "nextendoPid") ?? "0"
-            return !token.isEmpty && pid != "0"
-        }
-        return !creds.token.isEmpty && creds.pid != "0"
+        NextendoProfileHelper.shared.isConnected
     }
     
     private func isNextendoProfile(_ profile: Account) -> Bool {
+        let boundProfileId = UserDefaults.standard.string(forKey: "nextendoProfileUserId") ?? ""
+        if !boundProfileId.isEmpty && profile.user_id == boundProfileId {
+            return true
+        }
         guard !nextendoUsername.isEmpty && nextendoPid != "0" else { return false }
         return profile.name.lowercased() == nextendoUsername.lowercased()
     }
@@ -93,7 +94,7 @@ struct AccountManagerView: View {
                                 Spacer()
                             }
                             .swipeActions(edge: .trailing) {
-                                if profile.user_id != "00000000000000010000000000000000" {
+                                if profile.user_id != "00000000000000010000000000000000" && (!isNextendoConnected || !isNextendoProfile(profile)) {
                                     Button(role: .destructive) {
                                         var profiles2 = profiles
                                         profiles2.profiles.removeAll { $0.user_id == profile.user_id }
@@ -131,6 +132,10 @@ struct AccountManagerView: View {
                                 }
                             }
                             .onTapGesture {
+                                if isNextendoConnected && !isNextendoProfile(profile) {
+                                    showingNextendoLockedAlert = true
+                                    return
+                                }
                                 if profiles.profiles.contains(where: { $0.user_id == profiles.last_opened }) {
                                     Ryujinx.closeUser(userId: profiles.last_opened)
                                 }
@@ -200,6 +205,11 @@ struct AccountManagerView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("NextendoProfileUpdated"))) { _ in
             loadAccounts()
         }
+        .alert("Nextendo Profile Active", isPresented: $showingNextendoLockedAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("You are signed in to Nextendo Network. Your Nextendo profile must remain selected for online play. To use a local profile, sign out in Settings > Nextendo.")
+        }
     }
     
     func syncNextendo() {
@@ -213,6 +223,9 @@ struct AccountManagerView: View {
     }
     
     func loadAccounts() {
+        if isNextendoConnected {
+            NextendoProfileHelper.shared.ensureNextendoProfileSelected()
+        }
         do {
             let data = try Data(contentsOf: profilePath)
             profiles = try JSONDecoder().decode(Profiles.self, from: data)
