@@ -54,12 +54,42 @@ class OAuthWebViewController: UIViewController, WKNavigationDelegate {
             target: self,
             action: #selector(cancelTapped)
         )
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.clockwise"),
+            style: .plain,
+            target: self,
+            action: #selector(reloadTapped)
+        )
         
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
         
+        let preferences = WKWebpagePreferences()
+        preferences.allowsContentJavaScript = true
+        config.defaultWebpagePreferences = preferences
+        
+        // Ensure web page viewport is responsive and mobile-friendly so buttons are never unreachable
+        let viewportScript = """
+        var meta = document.querySelector('meta[name=viewport]');
+        if (!meta) {
+            meta = document.createElement('meta');
+            meta.name = 'viewport';
+            document.head.appendChild(meta);
+        }
+        meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes';
+        """
+        let userScript = WKUserScript(source: viewportScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
+        config.userContentController.addUserScript(userScript)
+        
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.scrollView.isScrollEnabled = true
+        webView.scrollView.alwaysBounceVertical = true
+        webView.scrollView.contentInsetAdjustmentBehavior = .always
+        // Add extra bottom inset so buttons near the bottom are easily scrollable into view
+        webView.scrollView.contentInset = UIEdgeInsets(top: 0, left: 0, bottom: 44, right: 0)
+        webView.scrollView.verticalScrollIndicatorInsets = UIEdgeInsets(top: 0, left: 0, bottom: 44, right: 0)
         webView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(webView)
         
@@ -91,10 +121,15 @@ class OAuthWebViewController: UIViewController, WKNavigationDelegate {
         onCancel()
     }
     
+    @objc private func reloadTapped() {
+        webView.reload()
+    }
+    
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         if let url = navigationAction.request.url {
             let redirectScheme = URL(string: NextendoSecrets.defaultRedirectUri)?.scheme ?? "melonx"
-            if url.scheme?.lowercased() == redirectScheme.lowercased() {
+            if url.scheme?.lowercased() == redirectScheme.lowercased() ||
+               url.absoluteString.hasPrefix(NextendoSecrets.defaultRedirectUri) {
                 decisionHandler(.cancel)
                 onCallback(url)
                 return
@@ -1048,21 +1083,7 @@ struct NextendoSettingsView: View {
 
     private func startOAuthLogin() {
         authErrorMessage = nil
-        isAuthenticating = true
-        let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
-        
-        NextendoOAuthManager.shared.startOAuth(baseUrl: baseUrl) { success, error in
-            DispatchQueue.main.async {
-                self.isAuthenticating = false
-                if success {
-                    NextendoProfileHelper.shared.ensureNextendoProfileSelected()
-                    self.refreshAccountState()
-                } else if let error = error {
-                    self.authErrorMessage = error
-                }
-            }
-        }
+        startFullPageOAuth()
     }
 
     private func submitCredentialsLogin() {

@@ -22,7 +22,7 @@
 ### Key Highlights
 
 - **Nextendo Network Integration**: Native support for NPLN and NEX (PRUDP) game traffic routing.
-- **Account & Profile Sync**: Native OAuth 2.0 PKCE sign-in via `ASWebAuthenticationSession` with automatic NEX game token retrieval (`/api/nex-token`), automated profile synchronization, and secure iOS Keychain storage.
+- **Account & Profile Sync**: Native OAuth 2.0 PKCE sign-in via WebKit view (`WKWebView`) with automatic NEX game token retrieval (`/api/nex-token`), automated profile synchronization, and secure iOS Keychain storage.
 - **Custom Server Override**: Built-in private server mode for connecting to self-hosted or LAN instances with isolated configuration that completely decouples from Nextendo secrets.
 - **Automated Fallbacks**:
   - Missing network IPs automatically fallback to `127.0.0.1`.
@@ -32,8 +32,8 @@
 > [!NOTE]
 > **Nextendo OAuth & NEX Token Flow**
 > Nextendo-MeloNX implements the official Nextendo Developers OAuth 2.0 PKCE standard:
-> 1. Authentication opens a system dialog with `ASWebAuthenticationSession` navigating to `https://nextendo.network/api/oauth/authorize`.
-> 2. The authorization code is exchanged at `POST /api/oauth/token` for an account access token.
+> 1. Authentication opens an in-app WebKit view (`WKWebView`) navigating to `https://nextendo.network/api/oauth/authorize` with responsive mobile scaling so all authorization buttons are always reachable.
+> 2. The authorization code is intercepted and exchanged at `POST /api/oauth/token` for an account access token.
 > 3. Following the developer specification (Section 10: Game Login), the emulator retrieves the authentic signed NEX login token (`nx2.`) via `GET /api/nex-token` with `Authorization: Bearer <access_token>`.
 > 4. The player profile, avatar, friend code, and NEX claim are automatically synchronized and locked as the active profile in MeloNX's Profile Manager and Ryujinx.
 > 5. Direct credential sign-in (`/api/login`) is also supported with password manager AutoFill via `webcredentials:nextendo.network`.
