@@ -26,6 +26,14 @@ namespace Ryujinx.Horizon.Bcat.Ipc
         public Result Open(DirectoryName directoryName)
         {
             string name = BcatSeed.ToName(ref directoryName);
+            if (BcatSeed.PreferServerSeed(_seedRoot))
+            {
+                if (!System.IO.Directory.Exists(System.IO.Path.Combine(_seedRoot, name))) return BcatResult.NotFound;
+                _seedDir = name;
+                Ryujinx.Common.Logging.Logger.Info?.Print(Ryujinx.Common.Logging.LogClass.ServiceBcat,
+                    $"[Nextendo BCAT] Directory opened from server package: {name}");
+                return Result.Success;
+            }
             Result res = _libHacService.Get.Open(ref directoryName).Horizon;
             if (res.IsFailure && System.IO.Directory.Exists(System.IO.Path.Combine(_seedRoot, name)))
             {

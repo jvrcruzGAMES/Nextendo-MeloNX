@@ -16,7 +16,6 @@ struct CreateAccount: View {
     @State var isSelected: (Bool, Bool) = (false, false)
     @Environment(\.presentationMode) var presentationMode
     
-    
     var body: some View {
         NavigationStack {
             VStack(spacing: 20) {
@@ -61,7 +60,6 @@ struct CreateAccount: View {
                     PhotoPicker(selectedImage: $selectedImage)
                 }
                 
-                
                 TextField("Enter Name", text: $name)
                     .padding()
                     .background(Color(.darkGray))
@@ -91,8 +89,8 @@ struct CreateAccount: View {
         guard let selectedImage else { return }
         
         presentationMode.wrappedValue.dismiss()
-        Ryujinx.createAccount(name: name, image: selectedImage.jpgData() ?? Data())
-        print("Account Created for \(name)")
+        let imageData = selectedImage.jpgData() ?? Data()
+        Ryujinx.createAccount(name: name, image: imageData)
     }
 }
 

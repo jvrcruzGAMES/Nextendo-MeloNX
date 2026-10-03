@@ -35,6 +35,8 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
             _lanInterfaceId = lanInterfaceId;
 
             BaseSocket = baseSocket;
+
+            DisableUdpConnReset(BaseSocket);
         }
 
         public DefaultSocket(AddressFamily domain, SocketType type, ProtocolType protocol, string lanInterfaceId)
@@ -42,6 +44,64 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
             _lanInterfaceId = lanInterfaceId;
 
             BaseSocket = new Socket(domain, type, protocol);
+
+            EnableDualStack(domain, BaseSocket);
+
+            DisableUdpConnReset(BaseSocket);
+        }
+
+        // [Nextendo] On Windows a UDP socket raises WSAECONNRESET (10054) on the NEXT recv when a
+        // prior sendto drew back an ICMP "port unreachable" — behaviour that does NOT exist on a
+        // real Switch. Pia's NAT-check / P2P sprays UDP probes (some to ports with no listener),
+        // so this spurious reset was surfaced to the game as ECONNRESET, which S2/MK8 read as the
+        // network dropping -> it closed the online session -> "A communication error has occurred".
+        // SIO_UDP_CONNRESET = false disables it so recv keeps working after an unreachable probe.
+        private static void DisableUdpConnReset(Socket socket)
+        {
+            if (!OperatingSystem.IsWindows() || socket.SocketType != SocketType.Dgram)
+            {
+                return;
+            }
+
+            try
+            {
+                const int SIO_UDP_CONNRESET = unchecked((int)0x9800000C);
+
+                socket.IOControl(SIO_UDP_CONNRESET, new byte[] { 0, 0, 0, 0 }, null);
+            }
+            catch (SocketException)
+            {
+                // Best-effort: ignore if the platform/socket doesn't support this control code.
+            }
+        }
+
+        // [Nextendo] IPv6 sockets must be dual-stack so the guest can reach an IPv4 target.
+        // Our DNS-MITM redirects Nintendo hostnames to an IPv4 server (e.g. a Nintendo service
+        // hostname -> 203.0.113.1), and Sfdnsres only ever hands the guest IPv4 addrinfo. But some
+        // games' online client opens an AF_INET6 socket and connects to the IPv4 address mapped to
+        // ::ffff:203.0.113.1. A default .NET IPv6 socket is V6ONLY, so that connect fails
+        // instantly (surfaced to the game as ETIMEDOUT) and the online handshake never starts.
+        // Enabling dual-stack makes the mapped-IPv4 connect succeed, matching real-hardware
+        // behaviour where the socket layer bridges v4/v6 transparently.
+        private static void EnableDualStack(AddressFamily domain, Socket socket)
+        {
+            if (domain != AddressFamily.InterNetworkV6)
+            {
+                return;
+            }
+
+            try
+            {
+                socket.DualMode = true;
+            }
+            catch (SocketException)
+            {
+                // Best-effort: platform without dual-stack support.
+            }
+            catch (NotSupportedException)
+            {
+                // Best-effort: socket type that doesn't support dual-stack.
+            }
         }
 
         private void EnsureNetworkInterfaceBound()
@@ -119,7 +179,31 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd.Proxy
         {
             EnsureNetworkInterfaceBound();
 
-            return BaseSocket.ReceiveFrom(buffer, flags, ref remoteEP);
+            // [Nextendo] Same spurious ICMP-induced reset that DisableUdpConnReset neutralises for
+            // WSAECONNRESET (10054), but for WSAENETRESET (10052) — which SIO_UDP_CONNRESET does NOT
+            // suppress. A prior sendto to a P2P peer drew back an ICMP error (TTL / transient
+            // unreachable), so the NEXT recvfrom on the SHARED P2P socket fails with NetworkReset;
+            // S2/MK8 read that as the network dropping and close the online session -> 2618-0006
+            // (confirmed 6/6 in a prod capture: 6 network errors == 6 SocketException(10052)). One
+            // flaky peer must not kill the socket every peer shares. Swallow it and read the next
+            // datagram: the failed call already consumed the queued ICMP error.
+            for (int attempt = 0; attempt < 16; attempt++)
+            {
+                try
+                {
+                    return BaseSocket.ReceiveFrom(buffer, flags, ref remoteEP);
+                }
+                catch (SocketException ex) when (
+                    ex.SocketErrorCode == SocketError.NetworkReset ||
+                    ex.SocketErrorCode == SocketError.ConnectionReset)
+                {
+                    // transient per-peer ICMP error: drop it and retry the read instead of failing
+                }
+            }
+
+            // A sustained storm of ICMP errors is unheard of; report "no data yet" (EWOULDBLOCK) so
+            // the game simply polls again, never a fatal drop.
+            throw new SocketException((int)SocketError.WouldBlock);
         }
 
         public int Send(ReadOnlySpan<byte> buffer)

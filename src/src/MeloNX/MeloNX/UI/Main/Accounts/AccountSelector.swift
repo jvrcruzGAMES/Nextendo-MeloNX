@@ -46,6 +46,7 @@ struct AccountSelector: View {
                                 Ryujinx.closeUser(userId: profiles.last_opened)
                                 
                                 Ryujinx.openUser(userId: profile.user_id)
+                                initEnvironmentVariables(reloadAccount: true)
                             }
                             
                             if profiles.last_opened == profile.user_id {

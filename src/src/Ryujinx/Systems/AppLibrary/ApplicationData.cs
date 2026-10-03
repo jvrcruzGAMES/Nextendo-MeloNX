@@ -15,15 +15,119 @@ using Ryujinx.Common.Configuration;
 using Ryujinx.Common.Logging;
 using Ryujinx.HLE.FileSystem;
 using Ryujinx.HLE.Loaders.Processes.Extensions;
+using Ryujinx.Ava.UI.Models;
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
 using System.Text.Json.Serialization;
 
 namespace Ryujinx.Ava.Systems.AppLibrary
 {
-    public class ApplicationData
+    // [Nextendo] INotifyPropertyChanged is implemented for ONE reason: the live "N players
+    // online" badge. Everything else here is set once at scan time, but the player count changes
+    // while the list is on screen, and a plain property would bind once and never update.
+    public class ApplicationData : System.ComponentModel.INotifyPropertyChanged
     {
+        public event System.ComponentModel.PropertyChangedEventHandler PropertyChanged;
+
+        private int _nextendoPlayersOnline;
+
+        /// <summary>
+        /// [Nextendo] Players currently online for this title, pushed by NextendoOnlineCounts.
+        /// </summary>
+        [JsonIgnore]
+        public int NextendoPlayersOnline
+        {
+            get => _nextendoPlayersOnline;
+            set
+            {
+                if (_nextendoPlayersOnline == value)
+                {
+                    return;
+                }
+
+                _nextendoPlayersOnline = value;
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(NextendoPlayersOnline)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(NextendoPlayersText)));
+                PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasNextendoPlayersOnline)));
+            }
+        }
+
+        /// <summary>[Nextendo] Hide the badge entirely at zero rather than showing "0 online".</summary>
+        [JsonIgnore]
+        public bool HasNextendoPlayersOnline => _nextendoPlayersOnline > 0;
+
+        /// <summary>[Nextendo] Localised "N players online" / "1 player online".</summary>
+        [JsonIgnore]
+        public string NextendoPlayersText =>
+            LocaleManager.Instance.UpdateAndGetDynamicValue(
+                _nextendoPlayersOnline == 1
+                    ? LocaleKeys.Dialog_Nextendo_PlayerOnlineFormat
+                    : LocaleKeys.Dialog_Nextendo_PlayersOnlineFormat,
+                _nextendoPlayersOnline);
+
+        // [Nextendo] Friends currently playing THIS game, shown as overlapping round avatars on the
+        // right of the game row (Discord-style). Pushed by NextendoFriendActivity, capped at 5.
+        private readonly ObservableCollection<NextendoFriendModel> _friendsInGame = [];
+
+        [JsonIgnore]
+        public ObservableCollection<NextendoFriendModel> FriendsInGame => _friendsInGame;
+
+        /// <summary>[Nextendo] True when at least one friend is in this game — drives the avatars row.</summary>
+        [JsonIgnore]
+        public bool HasFriendsInGame => _friendsInGame.Count > 0;
+
+        /// <summary>[Nextendo] Replace the friends-in-this-game set (UI thread) and refresh the row.
+        /// The ObservableCollection notifies the avatars itself; HasFriendsInGame needs a manual raise.</summary>
+        public void SetFriendsInGame(List<NextendoFriendModel> friends)
+        {
+            _friendsInGame.Clear();
+            if (friends != null)
+            {
+                foreach (NextendoFriendModel f in friends)
+                {
+                    _friendsInGame.Add(f);
+                }
+            }
+
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasFriendsInGame)));
+        }
+
+        // [Nextendo] UNCAPPED friend list for the "Friends playing: …" names in the hover
+        // tooltip of the player-count badge, so it never truncates beyond the 5 avatar cap.
+        private readonly ObservableCollection<NextendoFriendModel> _allFriendsInGame = [];
+
+        [JsonIgnore]
+        public ObservableCollection<NextendoFriendModel> AllFriendsInGame => _allFriendsInGame;
+
+        /// <summary>[Nextendo] True when at least one friend is in this game — drives the avatar row.</summary>
+        [JsonIgnore]
+        public bool HasAllFriendsInGame => _allFriendsInGame.Count > 0;
+
+        /// <summary>[Nextendo] Localised "N Friends playing" — shown in the player-count tooltip.</summary>
+        [JsonIgnore]
+        public string FriendsPlayingCountText =>
+            LocaleManager.Instance.UpdateAndGetDynamicValue(
+                LocaleKeys.Dialog_Nextendo_FriendsPlayingFormat, _allFriendsInGame.Count);
+
+        /// <summary>[Nextendo] Replace the uncapped friends set (UI thread) and refresh the tooltip.</summary>
+        public void SetAllFriendsInGame(List<NextendoFriendModel> friends)
+        {
+            _allFriendsInGame.Clear();
+            if (friends != null)
+            {
+                foreach (NextendoFriendModel f in friends)
+                {
+                    _allFriendsInGame.Add(f);
+                }
+            }
+
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(HasAllFriendsInGame)));
+            PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(nameof(FriendsPlayingCountText)));
+        }
+
         public bool Favorite { get; set; }
         public bool HasIndependentConfiguration { get; set; }
         public byte[] Icon { get; set; }
@@ -251,5 +355,174 @@ namespace Ryujinx.Ava.Systems.AppLibrary
 
             return Convert.ToHexString(reader.Header.ModuleId).Replace("-", string.Empty).ToUpper()[..16];
         }
+
+        // [Nextendo] Games with private-online support via Nextendo Network.
+        [JsonIgnore]
+        public bool IsNextendoCompatible => !string.IsNullOrEmpty(NextendoCompatibleVersion);
+
+        // The single game version Nextendo Network currently supports for this title.
+        // A different version can't reach the Nextendo servers (different NEX access key).
+        [JsonIgnore]
+        public string NextendoCompatibleVersion => IdBaseString switch
+        {
+            // [Nextendo 2026-09-07] 4.0.0, publiee le 1er septembre avec le support Switch 2.
+            // Version MAJEURE, donc on ne l'a pas montee a l'aveugle : verifiee par une COURSE
+            // ENTIERE jouee contre nos serveurs, pas seulement par une connexion reussie — se
+            // connecter et finir une course sont deux choses differentes.
+            //
+            // CTGPDX n'est pas affecte : IsNextendoVersionOk accepte aussi IsCtgpdxVariant, qui
+            // reste sur la base 3.0.3 avec son mod verifie.
+            "0100152000022000" => "4.0.0",  // Mario Kart 8 Deluxe
+            // [Nextendo 2026-09-06] 13.0.5, publiee le 1er septembre. Elle corrige "un probleme
+            // quand des donnees invalides sont envoyees ou recues pendant les combats en ligne",
+            // donc elle DURCIT le client : c'etait le candidat evident a une casse. Verifiee le
+            // 2026-09-06 sur une vraie console contre nos serveurs — arenes et quickplay, zero
+            // methode non geree en quinze minutes avec 79 joueurs connectes. Elle passe.
+            "01006a800016e000" => "13.0.5", // Super Smash Bros. Ultimate
+            "0100f8f0000a2000" => "5.5.2",  // Splatoon 2 (EU)
+            "01003bc0000a0000" => "5.5.2",  // Splatoon 2 (US)
+            "01003c700009c800" => "5.5.2",  // Splatoon 2 (JP)
+            "01006f8002326000" => "3.0.3",  // Animal Crossing: New Horizons
+            "0100dca0064a6000" => "1.4.0",  // Luigi's Mansion 3
+            // [Nextendo 2026-08-21] Splatoon 3 passe a 11.3.0. Les correctifs integres couvrent les
+            // deux versions — memes offsets, verifie en comparant les images decompressees — mais
+            // les faire cohabiter en ligne n'a pas de sens : deux builds differents dans un meme
+            // salon, c'est le desynchronisation assuree. Une seule version supportee a la fois,
+            // comme pour les autres titres.
+            "0100c2500fc20000" => "11.3.0", // Splatoon 3
+            "01008f6008c5e000" => "4.0.0",  // Pokémon Violet
+            "0100a3d008c5c000" => "4.0.0",  // Pokémon Scarlet
+            "0100f43008c44000" => "2.0.2",  // Pokémon Legends: Z-A
+            // [Nextendo 2026-09-08] Super Mario Bros. Wonder. Les correctifs integres (contournement
+            // du certificat epingle + deux rejets de nom de pair) sont lies a l'identifiant de build
+            // FF773E90972D544EB79406EAA65396D53C43EFB9, propre a cette version exacte : une autre
+            // mise a jour ne les recevrait pas et ne pourrait pas parler a nos serveurs.
+            "010015100b514000" => "1.2.1",  // Super Mario Bros. Wonder
+            "01006bd001e06000" => "1.0.17", // Minecraft: Nintendo Switch Edition
+            "01009b500007c000" => "5.5.1",  // ARMS
+            "0100bde00862a000" => "3.1.1",  // Mario Tennis Aces
+            "0100c9c00e25c000" => "4.0.0",  // Mario Golf: Super Rush
+            // [Nextendo 2026-09-20] Crash Team Racing Nitro-Fueled runs on Demonware, not NEX.
+            // The built-in patches are keyed to build 1C689518406930512C13DDF4217E7676, which is
+            // specific to this exact version; another update would not receive them.
+            "0100f9f00c696000" => "1.0.15", // Crash Team Racing Nitro-Fueled
+            // [Nextendo 2026-09-08] 1.0.2, PAS 1.1.2. La 1.1.2 n existe pas : la derniere mise a
+            // jour de SMB35 est la 1.0.2 (12 novembre 2020), le jeu ayant ferme en mars 2021.
+            // La table exigeait donc une version impossible et bloquait tout joueur ayant mis a
+            // jour l emulateur en 1.8.2 — signale par ffsaga le 2026-09-08.
+            "0100277011f1a000" => "1.0.2",  // Super Mario Bros. 35
+            "0100ad9012510000" => "1.0.0",  // Pac-Man 99
+            "01009b90006dc000" => "3.0.3",  // Super Mario Maker 2
+            "0100000000010000" => "1.4.1",  // Super Mario Odyssey
+            _ => "",
+        };
+
+        // [Nextendo] CTGPDX variant — Mario Kart 8 Deluxe on base 3.0.3 running the verified
+        // CTGP Deluxe mod. CTGPDX ships a Skyline plugin at romfs/skyline/plugins/CTGPDX.nro;
+        // we hash it against the known-good CTGPDX v1.1.1 so a player can't join CTGPDX online
+        // with tampered/fake tracks. A 3.0.3 install WITHOUT valid CTGPDX is blocked from online.
+        private const string Mk8dxBaseId = "0100152000022000";
+        private const string CtgpdxVersion = "3.0.3";
+        private const string CtgpdxNroSha256 = "66771c3c609330649e95c30226528880e060ad649eadaf37db0356044d351345";
+
+        private bool? _ctgpdxInstalled;
+
+        [JsonIgnore]
+        public bool IsCtgpdxInstalled
+        {
+            get
+            {
+                _ctgpdxInstalled ??= CheckCtgpdxMod();
+                return _ctgpdxInstalled.Value;
+            }
+        }
+
+        private bool CheckCtgpdxMod()
+        {
+            if (IdBaseString != Mk8dxBaseId)
+            {
+                return false;
+            }
+
+            try
+            {
+                foreach (string basePath in new[] { Ryujinx.HLE.HOS.ModLoader.GetModsBasePath(), Ryujinx.HLE.HOS.ModLoader.GetSdModsBasePath() })
+                {
+                    string dir = System.IO.Path.Combine(basePath, "contents", IdBaseString);
+                    if (!Directory.Exists(dir))
+                    {
+                        continue;
+                    }
+
+                    foreach (string nro in Directory.EnumerateFiles(dir, "CTGPDX.nro", SearchOption.AllDirectories))
+                    {
+                        if (!nro.Replace('\\', '/').EndsWith("romfs/skyline/plugins/CTGPDX.nro", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        using FileStream fs = File.OpenRead(nro);
+                        string hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(fs));
+                        if (hash.Equals(CtgpdxNroSha256, StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Unreadable mods dir -> treat as not installed (fail closed on the CTGPDX variant).
+            }
+
+            return false;
+        }
+
+        // True when THIS install is the CTGPDX variant: MK8DX base 3.0.3 + a verified CTGPDX mod.
+        [JsonIgnore]
+        public bool IsCtgpdxVariant => IdBaseString == Mk8dxBaseId && Version == CtgpdxVersion && IsCtgpdxInstalled;
+
+        // Reaches Nextendo online when the installed version is the vanilla compatible version,
+        // OR the CTGPDX variant (MK8DX 3.0.3 + verified CTGPDX).
+        //
+        // Each title has ONE supported version because the NEX access key and the protocol shape
+        // are version-specific: a mismatched build doesn't play badly, it fails to talk to the
+        // servers at all — and a player who gets in on the wrong version desyncs everyone else in
+        // the lobby. Gating it here turns a confusing mid-match failure into a clear "wrong
+        // version" applet before launch.
+        //
+        // This was temporarily bypassed to test vanilla MK8DX 3.0.3 online against the CTGPDX
+        // crash; the test is over, so it is enforced again.
+        [JsonIgnore]
+        public bool IsNextendoVersionOk =>
+            // [Nextendo] DEV / unstamped local builds skip the exact-version gate so ANY version
+            // of a compatible title can be tested online; stamped releases keep the strict check.
+            IsNextendoCompatible && (Version == NextendoCompatibleVersion || IsCtgpdxVariant
+                || !Ryujinx.Common.ReleaseInformation.IsValid);
+
+        // Splatoon 2 uses schedule byaml; Scarlet and Violet use event BCAT and Legends: Z-A
+        // uses it for Nextendo's Mystery Gifts.
+        // Only these titles should show the BCAT download action.
+        [JsonIgnore]
+        public bool RequiresNextendoByaml => IdBaseString switch
+        {
+            "0100f8f0000a2000" or "01003bc0000a0000" or "01003c700009c800" or
+            "0100c2500fc20000" or "01008f6008c5e000" or "0100a3d008c5c000" or "0100f43008c44000" => true,
+            _ => false,
+        };
+
+        [JsonIgnore]
+        public string NextendoTooltip =>
+            IsCtgpdxVariant
+                ? LocaleManager.Instance[LocaleKeys.Dialog_Nextendo_TooltipCtgpdx]
+                : LocaleManager.Instance.UpdateAndGetDynamicValue(
+                    LocaleKeys.Dialog_Nextendo_TooltipVersionFormat, NextendoCompatibleVersion);
+
+        // Badge label shown in the game list (version made visible, not just on hover).
+        [JsonIgnore]
+        public string NextendoBadge =>
+            IsCtgpdxVariant
+                ? "Nextendo Network · CTGPDX · 3.0.3"
+                : $"Nextendo Network · v{NextendoCompatibleVersion}";
     }
 }

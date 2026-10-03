@@ -258,6 +258,9 @@ class RyujinxController: ObservableObject {
             redirectStdIOToFile()
         }
         
+        // Refresh Nextendo credentials, account binding, and environment before launching
+        initEnvironmentVariables(reloadAccount: true)
+        
         Thread.detachNewThread {
             let response = Ryujinx.mainRyu(settings)
             

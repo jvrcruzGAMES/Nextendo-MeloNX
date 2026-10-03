@@ -114,7 +114,8 @@ namespace Ryujinx.HLE.HOS.Services.Sockets.Bsd
 
             try
             {
-                newBsdSocket = new ManagedSocket(netDomain, (SocketType)type, protocol, context.Device.Configuration.MultiplayerLanInterfaceId)
+                ulong programId = context.Device.Processes.GetProcess(context.ClientProcessId).ProgramId;
+                newBsdSocket = new ManagedSocket(netDomain, (SocketType)type, protocol, context.Device.Configuration.MultiplayerLanInterfaceId, programId)
                 {
                     Blocking = !creationFlags.HasFlag(BsdSocketCreationFlags.NonBlocking),
                 };

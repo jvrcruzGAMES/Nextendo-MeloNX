@@ -22,12 +22,18 @@
 ### Key Highlights
 
 - **Nextendo Network Integration**: Native support for NPLN and NEX (PRUDP) game traffic routing.
-- **Account & Profile Sync**: Full-page WebKit OAuth login with PKCE exchange, persistent profile synchronization, and secure iOS Keychain storage.
+- **Account & Profile Sync**: In-app native credentials authentication (`/api/login`), automatic profile synchronization, and secure iOS Keychain storage with password manager AutoFill support for `nextendo.network`.
 - **Custom Server Override**: Built-in private server mode for connecting to self-hosted or LAN instances with isolated configuration that completely decouples from Nextendo secrets.
 - **Automated Fallbacks**:
   - Missing network IPs automatically fallback to `127.0.0.1`.
-  - Missing OAuth configuration safely disables account login while keeping the emulator fully functional.
+  - Missing account configuration safely operates in offline/guest mode while keeping the emulator fully functional.
 - **Automated Nightly CI**: Pre-configured GitHub Actions workflow to build and package unsigned or signed sideloadable IPAs (`.ipa`) and application bundles (`.app.zip`).
+
+> [!IMPORTANT]
+> **Nextendo OAuth Support & Permissions Limitation**
+> Nextendo's public OAuth 2.0 system (`/api/oauth/authorize` & `/api/oauth/token`) currently **does not issue NEX authentication tokens (`nex_token`) to third-party applications**. The Nextendo server-side infrastructure strictly reserves `nex_token` generation for its official desktop client ID (`nextendo-emulator`) using local loopback redirection.
+>
+> Because third-party developer client credentials (`nxc_...`) lack server permissions to receive NEX tokens via OAuth, **in-app native credential login (`/api/login`) is used instead**. This directly retrieves the authentic NEX HMAC token, persistent PID, and friend code required for online multiplayer and matchmaking in titles such as *Mario Kart 8 Deluxe*, *Splatoon 2*, and *Splatoon 3*. Full password manager AutoFill (iCloud Keychain, 1Password, Bitwarden) is supported via the associated domain `webcredentials:nextendo.network`. The underlying OAuth implementation remains preserved in code for future use when server permissions are expanded.
 
 ---
 
@@ -50,15 +56,21 @@ Nextendo-MeloNX integrates network compatibility patches for various online engi
 
 ---
 
-## 🛠 Prerequisites
+## 🛠 Prerequisites & Hardware Requirements
+
+> [!WARNING]
+> **High Hardware Requirements & Memory Demands for Online Play**
+> - **Device Generation**: A **latest-generation iOS device** (iPhone 15 Pro / 16 series) or **recent-generation iPadOS device** (iPad Pro / Air with Apple Silicon M1, M2, or M4) is required.
+> - **Memory (RAM)**: Devices with **8GB of RAM or more** are required to have a smooth experience. Having 8GB+ of unified memory is often **mandatory to even be allowed to play online without problems**, as online netplay, simultaneous peer-to-peer buffer queues, shader compilation, and game state synchronization demand high memory headroom. Devices with 6GB or less frequently encounter Jetsam (OOM) memory termination or severe frame stutter during online matchmaking.
+> - **JIT Requirement**: **JIT is strictly required** for the NativeAOT execution engine (enabled via StikDebug, LiveContainer, TrollStore, etc.).
 
 To build and run Nextendo-MeloNX, you will need:
 
-1. **Host Environment**: macOS (Apple Silicon recommended) with Xcode 15 or 16 installed.
+1. **Host Environment**: macOS (Apple Silicon recommended) with Xcode 15, 16, or 27 installed.
 2. **.NET SDK**: .NET 10.0 or 8.0 SDK with `ios-arm64` NativeAOT support.
-3. **iOS Device**:
-   - iPhone / iPad running iOS 15.0 or later (iOS 17+ or iOS 18+ recommended).
-   - **JIT is strictly required** (enabled via StikDebug, LiveContainer or TrollStore).
+3. **Target Device**:
+   - iPhone with A17 Pro / A18 or iPad with Apple Silicon M-series (8GB+ RAM recommended/mandatory for online).
+   - Running iOS 17+ or iOS 18+ / iPadOS 17+ or iPadOS 18+.
 4. **Keys & Firmware**: Legal Nintendo Switch `prod.keys` and dumped system firmware.
 
 ---

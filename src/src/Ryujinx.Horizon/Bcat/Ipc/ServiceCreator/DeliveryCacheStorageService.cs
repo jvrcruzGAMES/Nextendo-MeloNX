@@ -70,10 +70,10 @@ namespace Ryujinx.Horizon.Bcat.Ipc
             // celui qu'il cherche — le repli de DeliveryCacheDirectoryService.Open, lui, ne se
             // declenche qu'a l'ouverture, donc trop tard. On complete ici avec ce que porte
             // reellement le dossier bcat-seed.
-            if (count == 0 && System.IO.Directory.Exists(_seedRoot))
+            if ((count == 0 || BcatSeed.PreferServerSeed(_seedRoot)) && System.IO.Directory.Exists(_seedRoot))
             {
                 string[] dirs = System.IO.Directory.GetDirectories(_seedRoot)
-                    .Where(dir => _seedRoot != BcatSeed.Root || !BcatSeed.IsPokemonTitleRoot(System.IO.Path.GetFileName(dir))).ToArray();
+                    .Where(dir => _seedRoot != BcatSeed.Root || !BcatSeed.IsTitleRoot(System.IO.Path.GetFileName(dir))).ToArray();
                 int n = System.Math.Min(dirs.Length, directoryNames.Length);
                 for (int i = 0; i < n; i++)
                 {

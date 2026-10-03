@@ -12,9 +12,30 @@ struct AccountManagerView: View {
     @State private var profiles: Profiles? = nil
     @State var test = false
     @State var editAccount = false
+    @State private var isSyncingNextendo = false
     @Environment(\.presentationMode) var presentationMode
     let profilePath = URL.documentsDirectory.appendingPathComponent("system").appendingPathComponent("Profiles.json")
     @State var account: Account? = nil
+    
+    private var nextendoUsername: String {
+        NextendoKeychainHelper.loadCredentials()?.username ?? UserDefaults.standard.string(forKey: "nextendoUserPseudo") ?? ""
+    }
+    private var nextendoPid: String {
+        NextendoKeychainHelper.loadCredentials()?.pid ?? UserDefaults.standard.string(forKey: "nextendoPid") ?? "0"
+    }
+    private var isNextendoConnected: Bool {
+        guard let creds = NextendoKeychainHelper.loadCredentials() else {
+            let token = UserDefaults.standard.string(forKey: "nextendoAuthToken") ?? ""
+            let pid = UserDefaults.standard.string(forKey: "nextendoPid") ?? "0"
+            return !token.isEmpty && pid != "0"
+        }
+        return !creds.token.isEmpty && creds.pid != "0"
+    }
+    
+    private func isNextendoProfile(_ profile: Account) -> Bool {
+        guard !nextendoUsername.isEmpty && nextendoPid != "0" else { return false }
+        return profile.name.lowercased() == nextendoUsername.lowercased()
+    }
     
     var body: some View {
         NavigationStack {
@@ -41,14 +62,28 @@ struct AccountManagerView: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(profile.name)
                                         .font(.headline)
-                                    HStack {
+                                    HStack(spacing: 6) {
                                         if profile.user_id == self.profiles?.last_opened ?? "" {
                                             Text("Current")
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 2)
                                                 .font(.caption2)
                                                 .background(Color.green.opacity(0.15))
+                                                .foregroundColor(.green)
                                                 .cornerRadius(6)
+                                        }
+                                        if isNextendoProfile(profile) {
+                                            HStack(spacing: 3) {
+                                                Image(systemName: "globe")
+                                                    .font(.system(size: 9))
+                                                Text("Nextendo")
+                                                    .font(.caption2.weight(.medium))
+                                            }
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 2)
+                                            .background(Color.blue.opacity(0.15))
+                                            .foregroundColor(.blue)
+                                            .cornerRadius(6)
                                         }
                                         Text("Last modified: \(formattedDate(profile.last_modified_timestamp))")
                                             .font(.caption)
@@ -78,7 +113,6 @@ struct AccountManagerView: View {
                                     }
                                 }
                                 
-                                
                                 Button {
                                     account = profile
                                     print(account == nil) // this is required to for the sheet to show, don't ask.
@@ -86,12 +120,22 @@ struct AccountManagerView: View {
                                 } label: {
                                     Image(systemName: "pencil")
                                 }
+                                
+                                if isNextendoConnected && isNextendoProfile(profile) {
+                                    Button {
+                                        syncNextendo()
+                                    } label: {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                    }
+                                    .tint(.blue)
+                                }
                             }
                             .onTapGesture {
                                 if profiles.profiles.contains(where: { $0.user_id == profiles.last_opened }) {
                                     Ryujinx.closeUser(userId: profiles.last_opened)
                                 }
                                 Ryujinx.openUser(userId: profile.user_id)
+                                initEnvironmentVariables(reloadAccount: true)
                                 
                                 loadAccounts()
                             }
@@ -117,10 +161,26 @@ struct AccountManagerView: View {
                         EditAccount(account: $account)
                     }
                     .toolbar {
-                        Button {
-                            test = true
-                        } label: {
-                            Image(systemName: "plus")
+                        ToolbarItemGroup(placement: .navigationBarTrailing) {
+                            if isNextendoConnected {
+                                Button {
+                                    syncNextendo()
+                                } label: {
+                                    if isSyncingNextendo {
+                                        ProgressView()
+                                            .scaleEffect(0.8)
+                                    } else {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                    }
+                                }
+                                .disabled(isSyncingNextendo)
+                            }
+                            
+                            Button {
+                                test = true
+                            } label: {
+                                Image(systemName: "plus")
+                            }
                         }
                     }
                 } else {
@@ -136,6 +196,19 @@ struct AccountManagerView: View {
         }
         .onAppear() {
             loadAccounts()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("NextendoProfileUpdated"))) { _ in
+            loadAccounts()
+        }
+    }
+    
+    func syncNextendo() {
+        isSyncingNextendo = true
+        NextendoProfileHelper.shared.syncCurrentSavedAccount { success, _ in
+            DispatchQueue.main.async {
+                self.isSyncingNextendo = false
+                self.loadAccounts()
+            }
         }
     }
     

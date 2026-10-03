@@ -71,7 +71,6 @@ struct EditAccount: View {
                         PhotoPicker(selectedImage: $selectedImage)
                     }
                     
-                    
                     TextField("Enter Name", text: $name)
                         .padding()
                         .background(Color(.darkGray))
@@ -109,6 +108,19 @@ struct EditAccount: View {
         if let selectedImage {
             let imageData = selectedImage.jpgData() ?? Data()
             self.account?.image = imageData.base64EncodedString()
+        }
+        
+        if account.user_id == UserDefaults.standard.string(forKey: "nextendoProfileUserId"),
+           let creds = NextendoKeychainHelper.loadCredentials(),
+           let pidNum = UInt64(creds.pid), pidNum != 0 {
+            NextendoProfileHelper.shared.writeNextendoAccountFile(
+                pid: pidNum,
+                username: name,
+                friendCode: creds.friendCode,
+                nexToken: creds.nexToken,
+                profileUserId: account.user_id
+            )
+            Ryujinx.reloadNextendoAccount()
         }
         
         presentationMode.wrappedValue.dismiss()

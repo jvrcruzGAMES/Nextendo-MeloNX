@@ -27,6 +27,15 @@ namespace Ryujinx.Horizon.Bcat.Ipc
         {
             string dn = BcatSeed.ToName(ref directoryName);
             string fn = BcatSeed.ToName(ref fileName);
+            if (BcatSeed.PreferServerSeed(_seedRoot))
+            {
+                string path = System.IO.Path.Combine(_seedRoot, dn, fn);
+                if (!System.IO.File.Exists(path)) return BcatResult.NotFound;
+                _seedPath = path;
+                Ryujinx.Common.Logging.Logger.Info?.Print(Ryujinx.Common.Logging.LogClass.ServiceBcat,
+                    $"[Nextendo BCAT] File opened from server package: {dn}/{fn}");
+                return Result.Success;
+            }
             Result res = _libHacService.Get.Open(ref directoryName, ref fileName).Horizon;
             if (res.IsFailure && System.IO.File.Exists(System.IO.Path.Combine(_seedRoot, dn, fn)))
             {

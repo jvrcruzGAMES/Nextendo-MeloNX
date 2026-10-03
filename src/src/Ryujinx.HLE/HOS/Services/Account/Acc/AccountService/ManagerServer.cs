@@ -36,13 +36,21 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
         {
             get
             {
+                if (OperatingSystem.IsIOS())
+                {
+                    return true;
+                }
+
                 string bound = NextendoAccount.ProfileUserId;
                 if (string.IsNullOrEmpty(bound))
                 {
                     return true;
                 }
 
-                return string.Equals(_userId.ToString(), bound, StringComparison.OrdinalIgnoreCase);
+                string cleanBound = bound.Replace("-", "").Trim();
+                string current = _userId.ToString().Replace("-", "").Trim();
+
+                return string.Equals(current, cleanBound, StringComparison.OrdinalIgnoreCase);
             }
         }
 
@@ -52,6 +60,9 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
 
         private byte[] _cachedTokenData;
         private DateTime _cachedTokenExpiry;
+        private string _cachedTokenVersion;
+        private ulong _cachedTokenProgramId;
+        private string _cachedTokenNexToken;
 
         public ManagerServer(UserId userId)
         {
@@ -100,7 +111,7 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
             return rsa;
         }
 
-        private static string GenerateIdToken()
+        private static string GenerateIdToken(string installedVersion, ulong programId)
         {
             RSAParameters parameters = _nextendoIdTokenRsa.ExportParameters(true);
 
@@ -130,6 +141,14 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
                 { "hm", true },
             };
 
+            // Scarlet shares Violet's NPLN tenant but needs its own app_id.
+            // Violet and every other game's BAAS token remain byte-compatible
+            // with the existing claim shape.
+            if (programId == 0x0100A3D008C5C000)
+            {
+                claims["app_id"] = programId.ToString("X16");
+            }
+
             // [Nextendo] Cryptographic account binding for the NEX login. The game forwards
             // this id_token inside its NEX login extraData, but the auth server can't trust
             // the bare account PID the game ALSO sends as its login username — a custom build
@@ -144,6 +163,11 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
                 claims["nnex"] = nexToken;
             }
 
+            if (!string.IsNullOrEmpty(installedVersion))
+            {
+                claims["tv"] = installedVersion;
+            }
+
             SecurityTokenDescriptor descriptor = new()
             {
                 Subject = new ClaimsIdentity([new Claim(JwtRegisteredClaimNames.Sub, Convert.ToHexString(rawUserId).ToLower())]),
@@ -156,7 +180,9 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
                 Claims = claims,
             };
 
-            return new JsonWebTokenHandler().CreateToken(descriptor);
+            string token = new JsonWebTokenHandler().CreateToken(descriptor);
+            Logger.Info?.Print(LogClass.ServiceAcc, $"[Nextendo] GenerateIdToken generated token: len={token.Length}, pid={NextendoAccount.Pid}, hasNnex={!string.IsNullOrEmpty(nexToken)}, nexTokenLen={nexToken?.Length ?? 0}, tv='{installedVersion}', programId=0x{programId:x16}");
+            return token;
         }
 
         public ResultCode CheckAvailability(ServiceCtx context)
@@ -176,9 +202,10 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
             //       as "%08x-%04x-%04x-%02x%02x-%08x%04x") in the account:/ savedata.
             //       Then it searches the NetworkServiceAccountId related to the UserId in this file and returns it.
 
-            Logger.Stub?.PrintStub(LogClass.ServiceAcc, new { NetworkServiceAccountId });
+            long accountId = NetworkServiceAccountId;
+            Logger.Info?.Print(LogClass.ServiceAcc, $"[Nextendo] GetAccountId returning: 0x{accountId:x} ({accountId}) for profile {_userId} (IsLinked={NextendoAccount.IsLinked}, Pid={NextendoAccount.Pid})");
 
-            context.ResponseData.Write(NetworkServiceAccountId);
+            context.ResponseData.Write(accountId);
 
             return ResultCode.Success;
         }
@@ -234,10 +261,21 @@ namespace Ryujinx.HLE.HOS.Services.Account.Acc.AccountService
             }
             */
 
-            if (_cachedTokenData == null || DateTime.UtcNow > _cachedTokenExpiry)
+            string installedVersion = context.Device.Processes.ActiveApplication?.DisplayVersion;
+            ulong programId = context.Device.Processes.ActiveApplication?.ProgramId ?? 0;
+            string currentNexToken = NextendoAccount.NexToken;
+
+            Logger.Info?.Print(LogClass.ServiceAcc, $"[Nextendo] LoadIdTokenCache: pid={NextendoAccount.Pid}, isLinked={NextendoAccount.IsLinked}, nexTokenLen={currentNexToken?.Length ?? 0}, installedVersion='{installedVersion}', programId=0x{programId:x16}");
+
+            if (_cachedTokenData == null || DateTime.UtcNow > _cachedTokenExpiry ||
+                installedVersion != _cachedTokenVersion || programId != _cachedTokenProgramId ||
+                currentNexToken != _cachedTokenNexToken)
             {
                 _cachedTokenExpiry = DateTime.UtcNow + TimeSpan.FromHours(3);
-                _cachedTokenData = Encoding.ASCII.GetBytes(GenerateIdToken());
+                _cachedTokenVersion = installedVersion;
+                _cachedTokenProgramId = programId;
+                _cachedTokenNexToken = currentNexToken;
+                _cachedTokenData = Encoding.ASCII.GetBytes(GenerateIdToken(installedVersion, programId));
             }
 
             byte[] tokenData = _cachedTokenData;

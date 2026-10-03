@@ -56,20 +56,20 @@ func initEnvironmentVariables(reloadAccount: Bool = true) {
     let nextendoEffectiveServerIp = NextendoSecrets.defaultServerIp.isEmpty ? "127.0.0.1" : NextendoSecrets.defaultServerIp
     let nextendoEffectiveNatIp = NextendoSecrets.defaultNatIp.isEmpty ? "127.0.0.1" : NextendoSecrets.defaultNatIp
     
-    let keychainToken = NextendoKeychainHelper.loadToken()
+    let loadedCreds = NextendoKeychainHelper.loadCredentials()
     let nexToken: String = {
         guard NextendoSecrets.isOAuthEnabled else {
             return ""
         }
-        if let token = keychainToken, !token.isEmpty {
-            return token
-        }
-        let fallback = defaults.string(forKey: "nextendoAuthToken") ?? ""
-        if !fallback.isEmpty {
-            NextendoKeychainHelper.saveToken(fallback)
-        }
-        return fallback
+        return loadedCreds?.nexToken ?? defaults.string(forKey: "nextendoNexToken") ?? ""
     }()
+    let pid = loadedCreds?.pid ?? defaults.string(forKey: "nextendoPid") ?? "0"
+    let username = loadedCreds?.username ?? defaults.string(forKey: "nextendoUserPseudo") ?? ""
+    let friendCode = loadedCreds?.friendCode ?? defaults.string(forKey: "nextendoFriendCode") ?? ""
+    let miiData = defaults.string(forKey: "nextendoMiiData") ?? ""
+    
+    let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
+    setenv("NEXTENDO_ACCOUNT_FILE", accountFilePath.path, 1)
     
     // Base environment variables
     for env in environment { env.set() }
@@ -95,14 +95,8 @@ func initEnvironmentVariables(reloadAccount: Bool = true) {
         setenv("NEXTENDO_NPLN_DELAY_MS", "3000", 1)
         unsetenv("NEXTENDO_HORS_NEXTENDO")
         
-        if !nexToken.isEmpty {
+        if !nexToken.isEmpty && pid != "0" {
             setenv("NEXTENDO_TOKEN", nexToken, 1)
-            
-            let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
-            let pid = defaults.string(forKey: "nextendoPid") ?? "0"
-            let username = defaults.string(forKey: "nextendoUserPseudo") ?? ""
-            let friendCode = defaults.string(forKey: "nextendoFriendCode") ?? ""
-            let miiData = defaults.string(forKey: "nextendoMiiData") ?? ""
             
             var profileUserId = ""
             let profilePath = URL.documentsDirectory.appendingPathComponent("system").appendingPathComponent("Profiles.json")
@@ -122,7 +116,7 @@ func initEnvironmentVariables(reloadAccount: Bool = true) {
             is_guest=0
             """
             try? content.write(to: accountFilePath, atomically: true, encoding: .utf8)
-        } else {
+        } else if !FileManager.default.fileExists(atPath: accountFilePath.path) {
             unsetenv("NEXTENDO_TOKEN")
         }
     } else {

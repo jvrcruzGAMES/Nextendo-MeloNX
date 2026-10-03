@@ -1,3 +1,4 @@
+using Ryujinx.Common.Logging;
 using System;
 using System.IO;
 
@@ -104,6 +105,12 @@ namespace Ryujinx.Common.Configuration
             {
                 try
                 {
+                    string envPath = Environment.GetEnvironmentVariable("NEXTENDO_ACCOUNT_FILE");
+                    if (!string.IsNullOrEmpty(envPath))
+                    {
+                        return envPath;
+                    }
+
                     string dir = AppDataManager.BaseDirPath;
                     if (string.IsNullOrEmpty(dir))
                     {
@@ -135,6 +142,13 @@ namespace Ryujinx.Common.Configuration
                     string path = FilePath;
                     if (string.IsNullOrEmpty(path) || !File.Exists(path))
                     {
+                        _pid = 0;
+                        Username = "";
+                        FriendCode = "";
+                        _nexToken = "";
+                        _profileUserId = "";
+                        _miiData = "";
+                        _isGuest = false;
                         return;
                     }
 
@@ -160,10 +174,13 @@ namespace Ryujinx.Common.Configuration
                             case "is_guest": _isGuest = val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase); break;
                         }
                     }
+
+                    Logger.Info?.Print(LogClass.Application, $"[Nextendo] NextendoAccount loaded from '{path}': pid={_pid}, user='{Username}', friendCode='{FriendCode}', nexTokenLen={_nexToken?.Length ?? 0}, isGuest={_isGuest}");
                 }
-                catch
+                catch (Exception ex)
                 {
                     // Corrupt/unreadable file -> treat as not linked.
+                    Logger.Warning?.Print(LogClass.Application, $"[Nextendo] Error reading NextendoAccount: {ex.Message}");
                     _pid = 0;
                 }
             }

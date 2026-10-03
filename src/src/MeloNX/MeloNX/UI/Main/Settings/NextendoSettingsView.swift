@@ -156,11 +156,11 @@ struct NextendoSettingsView: View {
     @AppStorage("customServerIp") private var customServerIp: String = ""
     @AppStorage("customNatIp") private var customNatIp: String = ""
     
-    // Account & Profile (Read-only)
+    // Account & Profile Display (Persisted in Keychain, cached in UserDefaults for UI display)
     @AppStorage("nextendoUserPseudo") private var nextendoUserPseudo: String = ""
     @AppStorage("nextendoFriendCode") private var nextendoFriendCode: String = ""
-    @AppStorage("nextendoAuthToken") private var nextendoAuthToken: String = ""
     @AppStorage("nextendoPid") private var nextendoPid: String = "0"
+    @AppStorage("nextendoAuthToken") private var nextendoAuthToken: String = ""
     
     // Services
     @AppStorage("enableNextendoCloudSave") private var enableNextendoCloudSave: Bool = true
@@ -175,11 +175,20 @@ struct NextendoSettingsView: View {
     @State private var showingResetAlert = false
     @State private var authErrorMessage: String? = nil
     @State private var isAuthenticating = false
+    @State private var isSyncingProfile = false
+    @State private var profileAvatarImage: UIImage? = nil
     @State private var showingFullPageOAuth = false
     @State private var currentAuthUrl: URL? = nil
     @State private var currentCodeVerifier: String = ""
     @State private var currentOAuthState: String = ""
+    @State private var showingCredentialsLogin = false
+    @State private var loginUsername = ""
+    @State private var loginPassword = ""
+    @State private var loginErrorMessage: String? = nil
+    @State private var isLoggingInWithCreds = false
+    
     @State private var isSupportedGamesExpanded = false
+    @State private var hasValidNexToken = false
     @Environment(\.colorScheme) var colorScheme
     
     private let supportedGames: [SupportedGameInfo] = [
@@ -225,65 +234,206 @@ struct NextendoSettingsView: View {
                 .padding(.vertical, 4)
             }
             
-            // Section 2: Account & Profile (Read-only + Web Device Auth via ASWebAuthenticationSession)
+            // Section 2: Account & Profile (Stored securely in Keychain)
             Section(header: Text("Account & Profile")) {
-                HStack {
-                    Text("Display Name")
-                        .font(.subheadline)
-                    Spacer()
-                    Text(nextendoUserPseudo.isEmpty ? "Guest Player" : nextendoUserPseudo)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .contextMenu {
-                    Button(action: {
-                        UIPasteboard.general.string = nextendoUserPseudo.isEmpty ? "Guest Player" : nextendoUserPseudo
-                    }) {
-                        Label("Copy Display Name", systemImage: "doc.on.doc")
+                if nextendoAuthToken.isEmpty && (nextendoPid == "0" || nextendoPid.isEmpty) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.orange)
+                            Text("Not Connected")
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        Text("Nextendo Network requires an authenticated account to participate in online matchmaking and multiplayer in supported games (Mario Kart 8 Deluxe, Splatoon, Pokémon, etc.).")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-                }
-                
-                HStack {
-                    Text("Friend Code")
-                        .font(.subheadline)
-                    Spacer()
-                    Text(nextendoFriendCode.isEmpty ? "SW-0000-0000-0000" : nextendoFriendCode)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .contextMenu {
+                    .padding(.vertical, 4)
+                    
                     Button(action: {
-                        UIPasteboard.general.string = nextendoFriendCode.isEmpty ? "SW-0000-0000-0000" : nextendoFriendCode
+                        loginErrorMessage = nil
+                        showingCredentialsLogin = true
                     }) {
-                        Label("Copy Friend Code", systemImage: "doc.on.doc")
+                        HStack {
+                            Label("Sign In with Nextendo Account", systemImage: "person.crop.circle.badge.checkmark")
+                                .font(.subheadline.weight(.medium))
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
-                }
-                
-                if NextendoSecrets.isOAuthEnabled {
-                    if nextendoAuthToken.isEmpty {
-                        Button(action: {
-                            startFullPageOAuth()
-                        }) {
-                            HStack {
-                                Label("Device Authorization (Sign In)", systemImage: "key.fill")
-                                    .font(.subheadline)
-                                Spacer()
-                                if isAuthenticating {
-                                    ProgressView()
-                                } else {
-                                    Image(systemName: "safari.fill")
-                                        .font(.caption)
+                    
+                    Link(destination: URL(string: "https://nextendo.network/register")!) {
+                        HStack {
+                            Label("Create Nextendo Account", systemImage: "person.badge.plus")
+                                .font(.subheadline)
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } else {
+                        HStack(spacing: 14) {
+                            if let avatar = profileAvatarImage {
+                                Image(uiImage: avatar)
+                                    .resizable()
+                                    .aspectRatio(contentMode: .fill)
+                                    .frame(width: 54, height: 54)
+                                    .clipShape(Circle())
+                                    .overlay(Circle().stroke(Color.blue, lineWidth: 2))
+                            } else {
+                                ZStack {
+                                    Circle()
+                                        .fill(Color.blue.opacity(0.15))
+                                        .frame(width: 54, height: 54)
+                                    Image(systemName: "person.crop.circle.fill")
+                                        .font(.system(size: 42))
                                         .foregroundColor(.blue)
                                 }
                             }
+                            
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(nextendoUserPseudo.isEmpty ? "Connected Player" : nextendoUserPseudo)
+                                    .font(.headline)
+                                Text(nextendoFriendCode.isEmpty ? "PID: \(nextendoPid)" : nextendoFriendCode)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
                         }
-                    } else {
+                        .padding(.vertical, 4)
+                        
+                        if hasValidNexToken {
+                            HStack {
+                                Text("NEX Multiplayer")
+                                    .font(.subheadline)
+                                Spacer()
+                                HStack(spacing: 5) {
+                                    Image(systemName: "checkmark.shield.fill")
+                                        .foregroundColor(.green)
+                                    Text("Active (HMAC Ready)")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundColor(.green)
+                                }
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                    Text("NEX Token Missing")
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.orange)
+                                }
+                                Text("Games requiring NEX authentication (Mario Kart 8 Deluxe, Splatoon 2, etc.) need a valid HMAC token. Without it, connection fails with error 2306-0802.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                
+                                Button(action: {
+                                    loginErrorMessage = nil
+                                    showingCredentialsLogin = true
+                                }) {
+                                    Label("Re-authenticate Now", systemImage: "arrow.clockwise.circle.fill")
+                                        .font(.subheadline.weight(.medium))
+                                }
+                                .padding(.top, 2)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        
+                        Button(action: {
+                            syncProfileNow()
+                        }) {
+                            HStack {
+                                Label("Sync Profile & Picture", systemImage: "arrow.triangle.2.circlepath")
+                                    .font(.subheadline)
+                                Spacer()
+                                if isSyncingProfile {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                }
+                            }
+                        }
+                        .disabled(isSyncingProfile)
+                        
+                        HStack {
+                            Text("Status")
+                                .font(.subheadline)
+                            Spacer()
+                            HStack(spacing: 5) {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 8, height: 8)
+                                Text("Connected")
+                                    .font(.subheadline)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                        
+                        HStack {
+                            Text("Display Name")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(nextendoUserPseudo.isEmpty ? "Connected Player" : nextendoUserPseudo)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .contextMenu {
+                            Button(action: {
+                                UIPasteboard.general.string = nextendoUserPseudo
+                            }) {
+                                Label("Copy Display Name", systemImage: "doc.on.doc")
+                            }
+                        }
+                        
+                        HStack {
+                            Text("Friend Code")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(nextendoFriendCode.isEmpty ? "SW-0000-0000-0000" : nextendoFriendCode)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .contextMenu {
+                            Button(action: {
+                                UIPasteboard.general.string = nextendoFriendCode
+                            }) {
+                                Label("Copy Friend Code", systemImage: "doc.on.doc")
+                            }
+                        }
+                        
+                        HStack {
+                            Text("Network ID (PID)")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(nextendoPid == "0" ? "Unknown" : nextendoPid)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Link(destination: URL(string: "\(nextendoServerUrl.isEmpty ? NextendoSecrets.defaultServerUrl : nextendoServerUrl)/compte") ?? URL(string: "https://nextendo.network/compte")!) {
+                            HStack {
+                                Label("Change Account Settings", systemImage: "arrow.up.right.square")
+                                    .font(.subheadline)
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
                         Button(role: .destructive, action: {
-                            NextendoKeychainHelper.deleteToken()
+                            NextendoProfileHelper.shared.removeNextendoProfileOnSignOut()
+                            NextendoKeychainHelper.clearAllCredentials()
                             nextendoAuthToken = ""
                             nextendoUserPseudo = ""
                             nextendoFriendCode = ""
                             nextendoPid = "0"
+                            hasValidNexToken = false
+                            UserDefaults.standard.removeObject(forKey: "nextendoAuthToken")
+                            UserDefaults.standard.removeObject(forKey: "nextendoNexToken")
                             UserDefaults.standard.removeObject(forKey: "nextendoMiiData")
                             let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
                             try? FileManager.default.removeItem(at: accountFilePath)
@@ -297,26 +447,7 @@ struct NextendoSettingsView: View {
                             }
                         }
                     }
-                    
-                    Link(destination: URL(string: "\(nextendoServerUrl.isEmpty ? NextendoSecrets.defaultServerUrl : nextendoServerUrl)/compte") ?? URL(string: "https://nextendo.network/compte")!) {
-                        HStack {
-                            Label("Change Account Settings", systemImage: "arrow.up.right.square")
-                                .font(.subheadline)
-                            Spacer()
-                        }
-                    }
-                } else {
-                    HStack {
-                        Label("Nextendo OAuth", systemImage: "key.slash")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                        Spacer()
-                        Text("Disabled (Build Unconfigured)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
                 }
-            }
             
             // Section 3: Core Network Configuration
             Section(header: Text("Network Configuration")) {
@@ -486,8 +617,7 @@ struct NextendoSettingsView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack {
                                         Text(game.name)
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
+                                            .font(.subheadline.weight(.semibold))
                                         Spacer()
                                         Text(game.engine)
                                             .font(.caption2)
@@ -548,6 +678,9 @@ struct NextendoSettingsView: View {
                 self.parseOAuthCallback(url: callbackUrl, codeVerifier: self.currentCodeVerifier, redirectUri: NextendoSecrets.defaultRedirectUri, baseUrl: baseUrl, clientId: NextendoSecrets.oauthClientId)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("NextendoProfileUpdated"))) { _ in
+            self.refreshAccountState()
+        }
         .fullScreenCover(isPresented: $showingFullPageOAuth) {
             if let authUrl = currentAuthUrl {
                 NextendoOAuthWebView(authUrl: authUrl) { callbackUrl in
@@ -563,15 +696,90 @@ struct NextendoSettingsView: View {
                 .ignoresSafeArea()
             }
         }
-        .onAppear {
-            guard NextendoSecrets.isOAuthEnabled else { return }
-            if let token = NextendoKeychainHelper.loadToken(), !token.isEmpty {
-                if nextendoAuthToken != token {
-                    nextendoAuthToken = token
+        .sheet(isPresented: $showingCredentialsLogin) {
+            NavigationStack {
+                Form {
+                    Section {
+                        VStack(alignment: .center, spacing: 8) {
+                            Image(systemName: "person.crop.circle.badge.checkmark")
+                                .font(.system(size: 44))
+                                .foregroundColor(.blue)
+                            Text("Nextendo Sign In")
+                                .font(.headline)
+                            Text("Enter your Nextendo username or email and password. This configures your profile and obtains your authentic NEX HMAC token for online multiplayer.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                    }
+                    
+                    Section(header: Text("Account Credentials")) {
+                        TextField("Username or Email", text: $loginUsername)
+                            .textContentType(.username)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            .keyboardType(.emailAddress)
+                        
+                        SecureField("Password", text: $loginPassword)
+                            .textContentType(.password)
+                    }
+                    
+                    if let error = loginErrorMessage {
+                        Section {
+                            Text(error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                        }
+                    }
+                    
+                    Section {
+                        Button(action: {
+                            submitCredentialsLogin()
+                        }) {
+                            HStack {
+                                Spacer()
+                                if isLoggingInWithCreds {
+                                    ProgressView()
+                                        .padding(.trailing, 4)
+                                }
+                                Text(isLoggingInWithCreds ? "Signing In..." : "Sign In")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                            }
+                        }
+                        .disabled(loginUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loginPassword.isEmpty || isLoggingInWithCreds)
+                    }
+                    
+                    Section {
+                        Link(destination: URL(string: "https://nextendo.network/register")!) {
+                            HStack {
+                                Label("Create Nextendo Account", systemImage: "person.badge.plus")
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
                 }
-            } else if !nextendoAuthToken.isEmpty {
-                NextendoKeychainHelper.saveToken(nextendoAuthToken)
+                .navigationTitle("Sign In")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") {
+                            showingCredentialsLogin = false
+                            loginPassword = ""
+                            loginErrorMessage = nil
+                        }
+                        .disabled(isLoggingInWithCreds)
+                    }
+                }
             }
+        }
+        .onAppear {
+            self.refreshAccountState()
         }
         .alert("Auth System Message", isPresented: Binding(
             get: { authErrorMessage != nil },
@@ -583,6 +791,10 @@ struct NextendoSettingsView: View {
         }
         .alert("Reset Settings", isPresented: $showingResetAlert) {
             Button("Reset", role: .destructive) {
+                NextendoProfileHelper.shared.removeNextendoProfileOnSignOut()
+                NextendoKeychainHelper.clearAllCredentials()
+                UserDefaults.standard.removeObject(forKey: "nextendoAuthToken")
+                nextendoAuthToken = ""
                 enableNextendoOnline = true
                 nextendoServerUrl = NextendoSecrets.defaultServerUrl
                 enableServerOverride = false
@@ -593,7 +805,6 @@ struct NextendoSettingsView: View {
                 UserDefaults.standard.removeObject(forKey: "nextendoNatIp")
                 nextendoUserPseudo = ""
                 nextendoFriendCode = ""
-                nextendoAuthToken = ""
                 nextendoPid = "0"
                 UserDefaults.standard.removeObject(forKey: "nextendoMiiData")
                 enableNextendoCloudSave = true
@@ -630,6 +841,7 @@ struct NextendoSettingsView: View {
             URLQueryItem(name: "redirect_uri", value: redirectUri),
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "scope", value: NextendoSecrets.oauthScopes),
+            URLQueryItem(name: "app", value: "ryujinx"),
             URLQueryItem(name: "state", value: pkce.state),
             URLQueryItem(name: "code_challenge", value: pkce.challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256")
@@ -653,16 +865,21 @@ struct NextendoSettingsView: View {
         
         var code: String? = nil
         var errorStr: String? = nil
+        var accessToken: String? = nil
+        var nexToken: String? = nil
         
         if let queryItems = components.queryItems {
             for item in queryItems {
                 if item.name == "code" { code = item.value }
                 if item.name == "error" || item.name == "error_description" { errorStr = item.value }
-                if (item.name == "access_token" || item.name == "nex_token"), let val = item.value, !val.isEmpty {
-                    self.handleReceivedToken(token: val, baseUrl: baseUrl)
-                    return
-                }
+                if item.name == "access_token" { accessToken = item.value }
+                if item.name == "nex_token" { nexToken = item.value }
             }
+        }
+        
+        if let access = accessToken, !access.isEmpty {
+            self.handleReceivedToken(authToken: access, nexToken: nexToken ?? "", baseUrl: baseUrl)
+            return
         }
         
         if let errorStr = errorStr {
@@ -725,30 +942,33 @@ struct NextendoSettingsView: View {
                     return
                 }
                 
-                let token = (json["access_token"] as? String) ?? (json["nex_token"] as? String)
-                guard let validToken = token, !validToken.isEmpty else {
+                let accessToken = (json["access_token"] as? String) ?? ""
+                let nexToken = (json["nex_token"] as? String) ?? ""
+                let effectiveAuth = !accessToken.isEmpty ? accessToken : nexToken
+                let effectiveNex = nexToken
+                
+                guard !effectiveAuth.isEmpty else {
                     self.authErrorMessage = "Could not retrieve access token."
                     return
                 }
                 
-                self.handleReceivedToken(token: validToken, baseUrl: baseUrl, initialJson: json)
+                self.handleReceivedToken(authToken: effectiveAuth, nexToken: effectiveNex, baseUrl: baseUrl, initialJson: json)
             }
         }.resume()
     }
     
-    private func handleReceivedToken(token: String, baseUrl: String, initialJson: [String: Any]? = nil) {
-        NextendoKeychainHelper.saveToken(token)
-        self.nextendoAuthToken = token
-        
+    private func handleReceivedToken(authToken: String, nexToken: String, baseUrl: String, initialJson: [String: Any]? = nil) {
         var inlineUsername = ""
         var inlineFriendCode = ""
         var inlinePid: UInt64 = 0
+        var inlineMii = ""
         
         if let initialJson = initialJson {
-            let userDict = (initialJson["user"] as? [String: Any]) ?? (initialJson["account"] as? [String: Any])
+            let userDict = (initialJson["account"] as? [String: Any]) ?? (initialJson["user"] as? [String: Any])
             if let userDict = userDict {
                 inlineUsername = (userDict["username"] as? String) ?? ""
                 inlineFriendCode = (userDict["friend_code"] as? String) ?? ""
+                if let mii = userDict["mii"] as? String { inlineMii = mii }
                 if let pidNum = userDict["pid"] as? UInt64 {
                     inlinePid = pidNum
                 } else if let pidInt = userDict["pid"] as? Int {
@@ -759,226 +979,114 @@ struct NextendoSettingsView: View {
             }
         }
         
-        self.fetchUserInfoAndSync(token: token, baseUrl: baseUrl, fallbackUsername: inlineUsername, fallbackFriendCode: inlineFriendCode, fallbackPid: inlinePid)
-    }
-    
-    private func fetchUserInfoAndSync(token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
-        guard let userinfoUrl = URL(string: "\(baseUrl)/api/oauth/userinfo") else {
-            self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
-            return
-        }
-        
-        var request = URLRequest(url: userinfoUrl)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
         self.isAuthenticating = true
-        
-        URLSession.shared.dataTask(with: request) { data, response, error in
-            let httpResponse = response as? HTTPURLResponse
-            let isUserinfoOk = (httpResponse?.statusCode ?? 500) >= 200 && (httpResponse?.statusCode ?? 500) < 300
-            
-            if isUserinfoOk, let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                self.processUserData(dict: json, token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
-            } else {
-                self.fetchProfileFallback(token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
-            }
-        }.resume()
-    }
-    
-    private func fetchProfileFallback(token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
-        guard let profileUrl = URL(string: "\(baseUrl)/api/profile") else {
+        NextendoProfileHelper.shared.fetchAndSyncProfile(
+            authToken: authToken,
+            nexToken: nexToken,
+            baseUrl: baseUrl,
+            fallbackPid: inlinePid,
+            fallbackUsername: inlineUsername,
+            fallbackFriendCode: inlineFriendCode,
+            fallbackMii: inlineMii
+        ) { success, _ in
             DispatchQueue.main.async {
                 self.isAuthenticating = false
-                self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
+                self.refreshAccountState()
             }
-            return
         }
+    }
+
+
+
+    private func submitCredentialsLogin() {
+        let rawBase = nextendoServerUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = rawBase.isEmpty ? NextendoSecrets.defaultServerUrl : rawBase
+        loginErrorMessage = nil
+        isLoggingInWithCreds = true
         
-        var request = URLRequest(url: profileUrl)
-        request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        
-        URLSession.shared.dataTask(with: request) { data, _, _ in
-            if let data = data,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                let dict = (json["profile"] as? [String: Any]) ?? json
-                self.processUserData(dict: dict, token: token, baseUrl: baseUrl, fallbackUsername: fallbackUsername, fallbackFriendCode: fallbackFriendCode, fallbackPid: fallbackPid)
-            } else {
-                DispatchQueue.main.async {
-                    self.isAuthenticating = false
-                    self.finalizeProfileSync(name: fallbackUsername.isEmpty ? "Nextendo" : fallbackUsername, token: token, baseUrl: baseUrl, pid: fallbackPid, friendCode: fallbackFriendCode, avatarData: nil, miiData: "")
+        NextendoProfileHelper.shared.loginWithCredentials(
+            login: loginUsername,
+            password: loginPassword,
+            baseUrl: baseUrl
+        ) { success, error in
+            DispatchQueue.main.async {
+                self.isLoggingInWithCreds = false
+                if success {
+                    self.showingCredentialsLogin = false
+                    self.loginPassword = ""
+                    self.loginErrorMessage = nil
+                    self.refreshAccountState()
+                } else {
+                    self.loginErrorMessage = error ?? "Failed to sign in. Please verify your credentials."
                 }
             }
-        }.resume()
+        }
     }
-    
-    private func processUserData(dict: [String: Any], token: String, baseUrl: String, fallbackUsername: String, fallbackFriendCode: String, fallbackPid: UInt64) {
-        var profileName = fallbackUsername
-        if let name = (dict["username"] as? String) ?? (dict["name"] as? String) ?? (dict["pseudo"] as? String), !name.isEmpty {
-            profileName = name
-        }
-        
-        var finalPid = fallbackPid
-        if let pidNum = dict["pid"] as? UInt64 {
-            finalPid = pidNum
-        } else if let pidInt = dict["pid"] as? Int {
-            finalPid = UInt64(pidInt)
-        } else if let pidStr = dict["pid"] as? String, let parsed = UInt64(pidStr) {
-            finalPid = parsed
-        }
-        
-        var finalFriendCode = fallbackFriendCode
-        if let fc = (dict["friend_code"] as? String) ?? (dict["friendCode"] as? String), !fc.isEmpty {
-            finalFriendCode = fc
-        }
-        
-        var finalMiiB64 = ""
-        if let mii = dict["mii"] as? String, !mii.isEmpty {
-            finalMiiB64 = mii
-        }
-        
-        var avatarUrlStr: String? = nil
-        if let aUrl = (dict["avatar_url"] as? String) ?? (dict["avatar"] as? String) ?? (dict["icon_url"] as? String), !aUrl.isEmpty {
-            avatarUrlStr = aUrl
-        }
-        
-        var avatarData: Data? = nil
-        if let imageB64 = dict["image"] as? String, let decoded = Data(base64Encoded: imageB64) {
-            avatarData = decoded
-        }
-        
-        if let avatarUrlStr = avatarUrlStr {
-            let fullAvatarUrl: URL?
-            if avatarUrlStr.hasPrefix("http://") || avatarUrlStr.hasPrefix("https://") {
-                fullAvatarUrl = URL(string: avatarUrlStr)
-            } else if avatarUrlStr.hasPrefix("/") {
-                fullAvatarUrl = URL(string: "\(baseUrl)\(avatarUrlStr)")
-            } else {
-                fullAvatarUrl = URL(string: "\(baseUrl)/\(avatarUrlStr)")
+
+    private func refreshAccountState() {
+        if let creds = NextendoKeychainHelper.loadCredentials() {
+            if !creds.authToken.isEmpty {
+                nextendoAuthToken = creds.authToken
+            } else if !creds.token.isEmpty {
+                nextendoAuthToken = creds.token
             }
-            
-            if let fullAvatarUrl = fullAvatarUrl {
-                URLSession.shared.dataTask(with: fullAvatarUrl) { data, _, _ in
-                    DispatchQueue.main.async {
-                        self.isAuthenticating = false
-                        let finalAvatar = data ?? avatarData
-                        self.finalizeProfileSync(name: profileName.isEmpty ? "Nextendo" : profileName, token: token, baseUrl: baseUrl, pid: finalPid, friendCode: finalFriendCode, avatarData: finalAvatar, miiData: finalMiiB64)
-                    }
-                }.resume()
+            if !creds.pid.isEmpty && creds.pid != "0" {
+                nextendoPid = creds.pid
+            }
+            if !creds.username.isEmpty {
+                nextendoUserPseudo = creds.username
+            }
+            if !creds.friendCode.isEmpty {
+                nextendoFriendCode = creds.friendCode
+            }
+            self.hasValidNexToken = !creds.nexToken.isEmpty
+        } else if let savedToken = UserDefaults.standard.string(forKey: "nextendoAuthToken"), !savedToken.isEmpty {
+            nextendoAuthToken = savedToken
+            self.hasValidNexToken = false
+        } else {
+            self.hasValidNexToken = false
+        }
+        self.loadActiveAvatar()
+    }
+
+    private func syncProfileNow() {
+        self.isSyncingProfile = true
+        NextendoProfileHelper.shared.syncCurrentSavedAccount { success, errorMsg in
+            DispatchQueue.main.async {
+                self.isSyncingProfile = false
+                if success {
+                    self.refreshAccountState()
+                } else if let errorMsg = errorMsg {
+                    self.authErrorMessage = errorMsg
+                }
+            }
+        }
+    }
+
+    private func loadActiveAvatar() {
+        let profilePath = NextendoProfileHelper.profilePath
+        if let data = try? Data(contentsOf: profilePath),
+           let profiles = try? JSONDecoder().decode(Profiles.self, from: data) {
+            let targetUser = profiles.profiles.first(where: { $0.user_id == profiles.last_opened }) ??
+                             profiles.profiles.first(where: { $0.name.lowercased() == self.nextendoUserPseudo.lowercased() })
+            if let targetUser = targetUser,
+               let imageB64 = targetUser.image,
+               let imgData = Data(base64Encoded: imageB64),
+               let img = UIImage(data: imgData) {
+                self.profileAvatarImage = img
                 return
             }
         }
         
-        DispatchQueue.main.async {
-            self.isAuthenticating = false
-            self.finalizeProfileSync(name: profileName.isEmpty ? "Nextendo" : profileName, token: token, baseUrl: baseUrl, pid: finalPid, friendCode: finalFriendCode, avatarData: avatarData, miiData: finalMiiB64)
-        }
-    }
-    
-    private func finalizeProfileSync(name: String, token: String, baseUrl: String, pid: UInt64, friendCode: String, avatarData: Data?, miiData: String) {
-        if pid != 0 {
-            self.nextendoPid = String(pid)
-        }
-        if !name.isEmpty {
-            self.nextendoUserPseudo = name
-        }
-        if !friendCode.isEmpty {
-            self.nextendoFriendCode = friendCode
-        }
-        if !miiData.isEmpty {
-            UserDefaults.standard.set(miiData, forKey: "nextendoMiiData")
-            if let miiBytes = Data(base64Encoded: miiData) {
-                Ryujinx.injectNextendoMii(data: miiBytes)
-            }
-        }
-        
-        let profilePath = URL.documentsDirectory.appendingPathComponent("system").appendingPathComponent("Profiles.json")
-        let finalImageData = avatarData ?? self.generateDefaultAvatar(name: name)
-        self.applyProfileToRyujinx(name: name, imageData: finalImageData, profilePath: profilePath, pid: pid, nexToken: token, friendCode: friendCode, miiData: miiData)
-    }
-
-    private func applyProfileToRyujinx(name: String, imageData: Data, profilePath: URL, pid: UInt64, nexToken: String, friendCode: String, miiData: String = "") {
-        var profilesObj: Profiles? = nil
-        if let data = try? Data(contentsOf: profilePath) {
-            profilesObj = try? JSONDecoder().decode(Profiles.self, from: data)
-        }
-        
-        var openedUserId = ""
-        if var profiles = profilesObj, let existing = profiles.profiles.first(where: { $0.name == name }) {
-            openedUserId = existing.user_id
-            if profiles.last_opened != existing.user_id {
-                Ryujinx.closeUser(userId: profiles.last_opened)
-                Ryujinx.openUser(userId: existing.user_id)
-                profiles.last_opened = existing.user_id
-                
-                if let encoded = try? JSONEncoder().encode(profiles) {
-                    try? encoded.write(to: profilePath)
-                }
-                Ryujinx.refreshAccountManager()
-            }
-        } else {
-            Ryujinx.createAccount(name: name, image: imageData)
-            
-            if let updatedData = try? Data(contentsOf: profilePath),
-               var newProfiles = try? JSONDecoder().decode(Profiles.self, from: updatedData),
-               let createdProfile = newProfiles.profiles.first(where: { $0.name == name }) {
-                openedUserId = createdProfile.user_id
-                if newProfiles.last_opened != createdProfile.user_id {
-                    Ryujinx.closeUser(userId: newProfiles.last_opened)
-                    Ryujinx.openUser(userId: createdProfile.user_id)
-                    newProfiles.last_opened = createdProfile.user_id
-                    
-                    if let encoded = try? JSONEncoder().encode(newProfiles) {
-                        try? encoded.write(to: profilePath)
+        if let pidNum = UInt64(nextendoPid), pidNum != 0 {
+            NextendoProfileHelper.shared.fetchAvatar(pid: pidNum, avatarUrlStr: nil, baseUrl: nextendoServerUrl) { imgData in
+                if let imgData = imgData, let img = UIImage(data: imgData) {
+                    DispatchQueue.main.async {
+                        self.profileAvatarImage = img
                     }
-                    Ryujinx.refreshAccountManager()
                 }
             }
         }
-        
-        self.writeNextendoAccountFile(pid: pid, username: name, friendCode: friendCode, nexToken: nexToken, profileUserId: openedUserId, miiData: miiData)
-    }
-
-    private func writeNextendoAccountFile(pid: UInt64, username: String, friendCode: String, nexToken: String, profileUserId: String, miiData: String = "") {
-        let accountFilePath = URL.documentsDirectory.appendingPathComponent("nextendo_account.txt")
-        let cleanProfileUserId = profileUserId.replacingOccurrences(of: "-", with: "")
-        let effectiveMii = miiData.isEmpty ? (UserDefaults.standard.string(forKey: "nextendoMiiData") ?? "") : miiData
-        let content = """
-        pid=\(pid)
-        username=\(username)
-        friend_code=\(friendCode)
-        nex_token=\(nexToken)
-        profile_user_id=\(cleanProfileUserId)
-        mii_data=\(effectiveMii)
-        is_guest=0
-        """
-        try? content.write(to: accountFilePath, atomically: true, encoding: .utf8)
-        initEnvironmentVariables()
-    }
-
-    private func generateDefaultAvatar(name: String) -> Data {
-        let size = CGSize(width: 256, height: 256)
-        let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { ctx in
-            UIColor.systemBlue.setFill()
-            ctx.fill(CGRect(origin: .zero, size: size))
-            
-            let initial = String(name.prefix(1)).uppercased()
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 120, weight: .bold),
-                .foregroundColor: UIColor.white
-            ]
-            let textSize = initial.size(withAttributes: attributes)
-            let rect = CGRect(
-                x: (size.width - textSize.width) / 2,
-                y: (size.height - textSize.height) / 2,
-                width: textSize.width,
-                height: textSize.height
-            )
-            initial.draw(in: rect, withAttributes: attributes)
-        }
-        return image.jpegData(compressionQuality: 0.8) ?? Data()
     }
 }
 
